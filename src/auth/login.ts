@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import { getContext, saveSession, closeBrowser } from '../browser.js';
 
-const HCP_URL = 'https://pro.housecallpro.com/pro/sign_in';
+const HCP_URL = 'https://pro.housecallpro.com/app/log_in';
 
 export async function login(): Promise<void> {
   const email = process.env.HCP_EMAIL;
@@ -18,7 +18,7 @@ export async function login(): Promise<void> {
   await page.fill('input[type="password"], input[name="password"]', password);
   await page.click('button[type="submit"], input[type="submit"]');
 
-  await page.waitForURL('**/dashboard**', { timeout: 15_000 });
+  await page.waitForURL('https://pro.housecallpro.com/app/**', { timeout: 15_000 });
   console.log('Logged in successfully.');
 
   await saveSession();

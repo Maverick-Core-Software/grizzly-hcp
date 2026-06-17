@@ -55,11 +55,11 @@ async function run() {
 
   // Log in
   console.log('Logging in...');
-  await page.goto('https://pro.housecallpro.com/pro/sign_in', { waitUntil: 'networkidle' });
+  await page.goto('https://pro.housecallpro.com/app/log_in', { waitUntil: 'networkidle' });
   await page.fill('input[type="email"], input[name="email"]', HCP_EMAIL);
   await page.fill('input[type="password"], input[name="password"]', HCP_PASSWORD);
   await page.click('button[type="submit"]');
-  await page.waitForURL('**/dashboard**', { timeout: 15_000 });
+  await page.waitForURL('https://pro.housecallpro.com/app/**', { timeout: 15_000 });
   console.log('Logged in. Browser is open — create or edit an estimate now.');
   console.log('All API calls will be captured. Press Ctrl+C when done.\n');
 
