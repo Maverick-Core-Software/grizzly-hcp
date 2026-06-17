@@ -1,0 +1,19 @@
+{
+  "name": "grizzly-hcp",
+  "version": "1.0.0",
+  "description": "Housecall Pro automation for Grizzly Electric",
+  "type": "module",
+  "scripts": {
+    "login": "tsx src/auth/login.ts",
+    "run": "tsx src/index.ts"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "playwright": "^1.49.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  }
+}
