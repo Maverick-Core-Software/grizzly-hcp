@@ -1,7 +1,8 @@
 node_modules/
 dist/
 .env
-data/
+data/*.csv
+data/*.json
 auth/session/
 proposals/
 *.log

@@ -6,7 +6,8 @@
   "scripts": {
     "login": "tsx src/auth/login.ts",
     "run": "tsx src/index.ts",
-    "estimate": "tsx src/automations/estimates/from-proposal.ts"
+    "estimate": "tsx src/automations/estimates/from-proposal.ts",
+    "sync-pricebook": "bash scripts/sync-pricebook.sh"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.104.2",
