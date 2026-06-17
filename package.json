@@ -5,10 +5,14 @@
   "type": "module",
   "scripts": {
     "login": "tsx src/auth/login.ts",
-    "run": "tsx src/index.ts"
+    "run": "tsx src/index.ts",
+    "estimate": "tsx src/automations/estimates/from-proposal.ts"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.104.2",
     "dotenv": "^16.4.5",
+    "mammoth": "^1.12.0",
+    "pdf-parse": "^2.4.5",
     "playwright": "^1.49.0"
   },
   "devDependencies": {
