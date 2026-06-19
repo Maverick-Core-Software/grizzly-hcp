@@ -20,11 +20,12 @@ const SCHEMA_DESCRIPTION = `{
   "jobType": "string or null — e.g. Panel Upgrade, Service Call, Rough-In, EV Charger Install",
   "tags": ["array of relevant tags"],
   "scopeOfWork": "string — full description/scope of the electrical work",
+  "betterTotal": number or null — the Better/Recommended total price if shown (e.g. 34950). Null if not present.,
   "lineItems": [
     {
-      "description": "string",
+      "description": "string — the actual service or material name only. EXCLUDE any summary lines, total lines, subtotal lines, 'Good/Better/Best' option labels, or lines that say 'Total Investment', 'Subtotal', 'Grand Total', 'Option', or similar.",
       "quantity": number,
-      "unitPrice": number,
+      "unitPrice": number or null — null if no unit price is listed in the document,
       "unit": "string or null — each, hr, ft, etc."
     }
   ],

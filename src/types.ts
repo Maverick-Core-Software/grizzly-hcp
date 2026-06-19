@@ -18,6 +18,7 @@ export interface ProposalData {
   jobType?: string;      // e.g. "Panel Upgrade", "Service Call", "Rough-In"
   tags?: string[];
   scopeOfWork: string;   // free-text notes / description
+  betterTotal?: number;  // Better/Recommended total — used as fallback when line items have no unit prices
   lineItems: LineItem[];
   estimateNumber?: string;
   validUntil?: string;   // ISO date string

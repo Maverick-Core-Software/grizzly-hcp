@@ -40,7 +40,7 @@ async function run() {
   page.on('request', req => {
     const url = req.url();
     if (!url.includes('housecallpro.com')) return;
-    if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method())) return;
+    if (!['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method())) return;
     if (/\.(js|css|png|jpg|svg|woff)/.test(url)) return;
 
     let body: unknown = null;
@@ -69,7 +69,7 @@ async function run() {
   page.on('response', async res => {
     const url = res.url();
     if (!url.includes('housecallpro.com')) return;
-    if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(res.request().method())) return;
+    if (!['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].includes(res.request().method())) return;
 
     const entry = captured.findLast(c => c.url === url && c.responseStatus === 0);
     if (!entry) return;

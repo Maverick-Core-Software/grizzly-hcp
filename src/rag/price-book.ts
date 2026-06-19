@@ -1,11 +1,11 @@
 /**
- * Local fuzzy matcher against the Grizzly HCP price book CSV.
- * Pre-matches proposal line items to HCP price book names before
- * Playwright searches HCP, so we search with the exact right term.
+ * Price book matcher. Tries RAG semantic search first (when online),
+ * falls back to local CSV fuzzy match. Both paths return the same MatchResult shape.
  */
 import fs from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { searchPriceBook, checkHealth } from './client.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CSV_PATH = path.resolve(__dirname, '../../data/pricebook.csv');
@@ -59,7 +59,7 @@ export async function loadPriceBook(): Promise<PriceBookItem[]> {
  * Find the best price book match for a given description.
  * Returns null if nothing scores above the threshold.
  */
-export async function findBestMatch(description: string, threshold = 0.35): Promise<MatchResult | null> {
+export async function findBestMatch(description: string, threshold = 0.6): Promise<MatchResult | null> {
   const items = await loadPriceBook();
   const needle = normalize(description);
 
@@ -78,18 +78,51 @@ export async function findBestMatch(description: string, threshold = 0.35): Prom
   return best;
 }
 
+const RAG_SCORE_THRESHOLD = 0.68; // cosine similarity — tune up if you get false positives
+
 /**
- * Match all line items at once. Returns an array parallel to inputs,
- * each entry is { match: MatchResult | null, original: string }.
+ * Match all line items at once. Tries RAG semantic search first (when online),
+ * falls back to local CSV fuzzy match for any item that scores below threshold.
  */
 export async function matchLineItems(
   items: Array<{ description: string; quantity: number; unitPrice: number }>
 ): Promise<Array<{ description: string; quantity: number; unitPrice: number; match: MatchResult | null }>> {
+  const ragOnline = await checkHealth();
+
   return Promise.all(
-    items.map(async item => ({
-      ...item,
-      match: await findBestMatch(item.description),
-    }))
+    items.map(async item => {
+      let match: MatchResult | null = null;
+
+      if (ragOnline) {
+        try {
+          const hits = await searchPriceBook(item.description, 1);
+          const top = hits[0];
+          if (top && top.score >= RAG_SCORE_THRESHOLD) {
+            match = {
+              item: {
+                category: top.category,
+                uuid: top.uuid,
+                name: top.name,
+                description: top.description,
+                price: top.price,
+                priceStr: `$${top.price.toFixed(2)}`,
+                unitOfMeasure: top.unitOfMeasure,
+              },
+              score: top.score,
+              exact: false,
+            };
+          }
+        } catch {
+          // RAG offline or this item failed — fall through to local
+        }
+      }
+
+      if (!match) {
+        match = await findBestMatch(item.description);
+      }
+
+      return { ...item, match };
+    })
   );
 }
 
@@ -104,17 +137,50 @@ function normalize(s: string): string {
 }
 
 function similarity(a: string, b: string): number {
-  const wordsA = new Set(a.split(' ').filter(w => w.length > 2));
-  const wordsB = new Set(b.split(' ').filter(w => w.length > 2));
-  if (wordsA.size === 0) return 0;
+  const wordsA = new Set(a.split(' ').filter(w => w.length > 3));
+  const wordsB = new Set(b.split(' ').filter(w => w.length > 3));
+
+  // Require at least 2 meaningful words to avoid single-word false matches
+  if (wordsA.size < 2) return 0;
 
   let hits = 0;
   for (const w of wordsA) {
     if (wordsB.has(w)) hits++;
   }
 
-  // Jaccard-style overlap weighted toward the needle
   return hits / Math.max(wordsA.size, 1);
+}
+
+/**
+ * Append a new item to the local pricebook.csv and invalidate the in-memory cache.
+ * Called automatically when a custom line item is saved to the HCP price book.
+ */
+export async function appendToCsv(item: Omit<PriceBookItem, 'price'> & { price: number }): Promise<void> {
+  const INDUSTRY        = 'Electrical';
+  const INDUSTRY_UUID   = 'ind_600204be061340dabf33d97e8db5c0b9';
+  const TAXABLE         = 'false';
+  const TASK_CODE       = '';
+  const ONLINE_BOOKING  = 'true';
+
+  const escape = (s: string) => `"${s.replace(/"/g, '""')}"`;
+
+  const row = [
+    INDUSTRY,
+    INDUSTRY_UUID,
+    item.category,
+    item.uuid,
+    item.name,
+    item.description,
+    item.priceStr || `$${item.price.toFixed(2)}`,
+    '$0.00',
+    TAXABLE,
+    item.unitOfMeasure || 'Each',
+    TASK_CODE,
+    ONLINE_BOOKING,
+  ].map(escape).join(',');
+
+  await fs.appendFile(CSV_PATH, '\n' + row, 'utf-8');
+  _cache = null; // force reload on next use
 }
 
 /** Minimal CSV parser that handles quoted fields with embedded commas/newlines */

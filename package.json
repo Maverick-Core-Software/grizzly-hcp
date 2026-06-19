@@ -4,23 +4,33 @@
   "description": "Housecall Pro automation for Grizzly Electric",
   "type": "module",
   "scripts": {
-    "login": "tsx src/auth/login.ts",
-    "run": "tsx src/index.ts",
+    "login": "tsx src/hcp/auth.ts",
     "estimate": "tsx src/automations/estimates/from-proposal.ts",
+    "templates": "tsx src/hcp/list-templates.ts",
+    "export-pricebook": "tsx src/hcp/export-pricebook.ts",
+    "export-customers": "tsx src/hcp/export-customers.ts",
+    "export-jobs": "tsx src/hcp/export-jobs.ts",
     "sync-pricebook": "bash scripts/sync-pricebook.sh",
-    "intercept": "tsx src/auth/intercept-api.ts"
+    "push-pricebook": "bash scripts/push-pricebook.sh",
+    "push-customers": "bash scripts/push-customers.sh",
+    "push-jobs": "bash scripts/push-jobs.sh",
+    "intercept": "tsx src/auth/intercept-api.ts",
+    "add-item": "tsx src/hcp/add-item-cli.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.104.2",
     "docxtemplater": "^3.68.7",
     "dotenv": "^16.4.5",
     "mammoth": "^1.12.0",
-    "pdf-parse": "^2.4.5",
+    "pdf-parse": "^1.1.1",
     "pizzip": "^3.2.0",
-    "playwright": "^1.49.0"
+    "playwright": "^1.49.0",
+    "qrcode-terminal": "^0.12.0",
+    "uuid": "^14.0.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
+    "@types/uuid": "^10.0.0",
     "tsx": "^4.19.0",
     "typescript": "^5.7.0"
   }

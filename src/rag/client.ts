@@ -79,3 +79,60 @@ export async function checkHealth(): Promise<boolean> {
     return false;
   }
 }
+
+export interface PriceBookMatch {
+  uuid: string;
+  name: string;
+  description: string;
+  price: number;
+  category: string;
+  unitOfMeasure: string;
+  score: number;
+}
+
+export async function searchPriceBook(description: string, topK = 5): Promise<PriceBookMatch[]> {
+  const res = await fetch(`${RAG_BASE}/pricebook/search`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query: description, top_k: topK }),
+  });
+  if (!res.ok) throw new Error(`RAG /pricebook/search failed: ${res.status} ${await res.text()}`);
+  const data: {
+    results: Array<{
+      uuid: string; name: string; description: string; price: number;
+      category: string; unit_of_measure: string; score: number;
+    }>;
+  } = await res.json();
+  return data.results.map(r => ({
+    uuid: r.uuid,
+    name: r.name,
+    description: r.description,
+    price: r.price,
+    category: r.category,
+    unitOfMeasure: r.unit_of_measure,
+    score: r.score,
+  }));
+}
+
+export async function indexPriceBookItem(item: {
+  uuid: string;
+  name: string;
+  description?: string;
+  price?: number;
+  category?: string;
+  unitOfMeasure?: string;
+}): Promise<void> {
+  const res = await fetch(`${RAG_BASE}/pricebook/index`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      uuid: item.uuid,
+      name: item.name,
+      description: item.description ?? '',
+      price: item.price ?? 0,
+      category: item.category ?? 'Custom',
+      unit_of_measure: item.unitOfMeasure ?? 'Each',
+    }),
+  });
+  if (!res.ok) throw new Error(`RAG /pricebook/index failed: ${res.status} ${await res.text()}`);
+}

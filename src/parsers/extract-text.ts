@@ -6,7 +6,7 @@ export async function extractText(filePath: string): Promise<string> {
   const buffer = await fs.readFile(filePath);
 
   if (ext === '.pdf') {
-    const pdfParse = (await import('pdf-parse')).default;
+    const { default: pdfParse } = await import('pdf-parse/lib/pdf-parse.js');
     const result = await pdfParse(buffer);
     return result.text;
   }

@@ -45,12 +45,17 @@ Present in chat (no file yet):
 2. **Scope of Work**
 3. **Known Conditions / Assumptions**
 4. **NEC / Calculation Notes** (cite articles when relevant)
-5. **Material Takeoff**
-6. **Labor Assumptions**
-7. **Good / Better / Best Pricing** — Better is recommended unless scope dictates otherwise
-8. **Exclusions / Risks**
+5. **Line Item Breakdown** — every item must have: description, quantity, unit, and unit price.
+   Format as a table with columns: | Item | Qty | Unit | Unit Price | Total |
+   Include materials AND labor as separate line items.
+   This table is internal — it drives the HCP estimate and the Good/Better/Best math.
+6. **Good / Better / Best Pricing** — Better is recommended unless scope dictates otherwise.
+   Good/Better/Best are achieved by adjusting scope/quantities on specific line items, not by
+   applying a flat markup. Show which items change between tiers.
+7. **Exclusions / Risks**
 
-Do not expose internal math in customer-facing content.
+Do not expose internal math or the line item table in the customer-facing proposal document.
+The customer sees scope narrative + Good/Better/Best totals only.
 Deposit: 50% for jobs over $5,000.
 Recommended option: **Better** by default.
 
@@ -97,9 +102,12 @@ npm run estimate proposals/CustomerName-Location-Proposal.docx
 
 | Command | What it does |
 |---------|-------------|
-| `npm run login` | Log into HCP and save browser session |
-| `npm run estimate <file>` | Parse proposal PDF/DOCX → create HCP estimate via Playwright |
-| `npm run estimate <file> --dry-run` | Parse only, show what would be sent — no HCP changes |
+| `npm run login` | Log into HCP and save browser session (run once) |
+| `npm run estimate <file>` | Parse proposal PDF/DOCX → create HCP estimate via API |
+| `npm run estimate <file> -- --dry-run` | Parse only, show what would be sent — no HCP changes |
+| `npm run estimate <file> -- --template <eot_uuid>` | Same but applies a saved HCP template first |
+| `npm run templates` | List all saved HCP estimate templates and their UUIDs |
+| `npm run intercept` | Capture HCP API calls during manual browser session |
 | `npm run run` | Pull scheduled jobs from HCP |
 
 ## Project Structure
