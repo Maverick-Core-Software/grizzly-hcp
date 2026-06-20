@@ -15,21 +15,29 @@
     "push-customers": "bash scripts/push-customers.sh",
     "push-jobs": "bash scripts/push-jobs.sh",
     "intercept": "tsx src/auth/intercept-api.ts",
-    "add-item": "tsx src/hcp/add-item-cli.ts"
+    "add-item": "tsx src/hcp/add-item-cli.ts",
+    "takeoff": "tsx src/takeoff/cli.ts",
+    "takeoff:validate": "tsx src/takeoff/cli.ts --validate-mode"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.104.2",
     "docxtemplater": "^3.68.7",
     "dotenv": "^16.4.5",
+    "dxf": "^2.3.0",
     "mammoth": "^1.12.0",
     "pdf-parse": "^1.1.1",
+    "pdf2pic": "^3.1.4",
     "pizzip": "^3.2.0",
     "playwright": "^1.49.0",
     "qrcode-terminal": "^0.12.0",
-    "uuid": "^14.0.0"
+    "sharp": "^0.33.5",
+    "uuid": "^14.0.0",
+    "zod": "^3.23.8"
   },
   "devDependencies": {
+    "@types/dxf": "^4.6.10",
     "@types/node": "^22.0.0",
+    "@types/pdf-parse": "^1.1.5",
     "@types/uuid": "^10.0.0",
     "tsx": "^4.19.0",
     "typescript": "^5.7.0"
