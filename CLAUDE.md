@@ -14,81 +14,46 @@ Available endpoints:
 
 Use `src/rag/client.ts` for all RAG calls. Never call the RAG URL directly in new code.
 
-## Proposal Builder
+## Estimate Builder (HCP pipeline)
 
-You are the **Grizzly Electrical Solutions proposal builder**. When a user asks to build an
-estimate or proposal, follow this workflow exactly:
+When a user asks to build an estimate, the canonical workflow is the **HCP estimate
+pipeline** — the same one the email watcher runs. There is **no Good/Better/Best proposal
+flow** and **no customer-facing DOCX**; the deliverable is a real Housecall Pro estimate
+with price-book-matched line items.
 
-### Step 1 — Interview
+The pipeline lives in `src/automations/estimates/`:
+- `from-chat.ts` — entry for chat/MCA/MCC. stdin JSON `{ scope, customerName?, customerEmail?, customerPhone? }` → stdout `{ success, estimateUrl, estimateUuid }`; progress on stderr as `[progress] …`.
+- `from-email.ts` — entry for the email watcher. Structurally identical to `from-chat.ts`; only the input source differs (email body/attachments vs. chat scope).
 
-Gather the following before estimating. Pull from RAG first; ask only for what's missing:
+Both run the same steps:
+1. **Find/create customer** — `searchCustomer(name)`, falling back to email prefix, else `createCustomer(...)` (or an "Unknown Customer" placeholder if no info).
+2. **Create the HCP estimate** — `createEstimate(customer.id, customer.addressId)`.
+3. **Extract service items** — Haiku turns the scope into short price-book-style service names (`extractServiceItems`).
+4. **Match the price book** — `matchLineItems` against the live HCP price book; unmatched items are auto-saved to the price book at $0.
+5. **Add line items** — `addLineItem` per matched item (materials/labor/discount kind inferred).
+6. **Assign technicians** — Carter + Jaime via `CARTER_TECH_ID` / `JAIME_TECH_ID`.
+7. **Return the HCP URL** — `https://pro.housecallpro.com/app/estimates/<uuid>`.
 
-- Customer name (look up in RAG — may have address, phone, email already)
-- Project address / location label
-- Scope of work (be specific: panel size, circuit count, breaker types, wire runs, etc.)
-- Site conditions (new construction, retrofit, drywall open/closed, attic access, etc.)
-- Any special requirements (permits, Oncor coordination, GFCI/AFCI, EV charger, etc.)
-- Deposit terms (default: 50% for jobs over $5,000)
+### Scope generation
 
-### Step 2 — RAG Lookup
+The scope text fed to the pipeline is produced by the RAG, grounded in Grizzly's real data:
+- Email watcher: RAG `POST /estimate-stream` (see email-watcher `generateScope`).
+- Chat (MCC/MCA): the server extracts customer + scope from the conversation, then spawns
+  `from-chat.ts`. When RAG is offline a Claude fallback system prompt generates the scope.
 
-Before estimating, query the RAG for:
-1. Customer record: `lookupCustomer(name)` → fills address, phone, email
-2. Pricing context: `lookupPricing(scope)` → pulls price book + past proposal pricing
-3. NEC/Oncor requirements if relevant: `ragDocs(query)` → pull specs
+When gathering scope from a person, pull from RAG first and ask only for what's missing:
+customer (RAG may already have address/phone/email), project address, specific scope (panel
+size, circuit count, breaker types, wire runs), site conditions, special requirements
+(permits, Oncor, GFCI/AFCI, EV charger). Use `lookupCustomer`, `lookupPricing`, `ragDocs`.
 
-### Step 3 — Build Estimate
+### Blueprint takeoff (optional upstream step)
 
-Present in chat (no file yet):
+If a drawing is attached (DWG/DXF/PDF/PNG), `src/takeoff/cli.ts` produces device counts,
+routing lengths, and labor hours that feed into the scope before the pipeline runs.
 
-1. **Job Summary**
-2. **Scope of Work**
-3. **Known Conditions / Assumptions**
-4. **NEC / Calculation Notes** (cite articles when relevant)
-5. **Line Item Breakdown** — every item must have: description, quantity, unit, and unit price.
-   Format as a table with columns: | Item | Qty | Unit | Unit Price | Total |
-   Include materials AND labor as separate line items.
-   This table is internal — it drives the HCP estimate and the Good/Better/Best math.
-6. **Good / Better / Best Pricing** — Better is recommended unless scope dictates otherwise.
-   Good/Better/Best are achieved by adjusting scope/quantities on specific line items, not by
-   applying a flat markup. Show which items change between tiers.
-7. **Exclusions / Risks**
+### Deposit
 
-Do not expose internal math or the line item table in the customer-facing proposal document.
-The customer sees scope narrative + Good/Better/Best totals only.
-Deposit: 50% for jobs over $5,000.
-Recommended option: **Better** by default.
-
-### Step 4 — Approval
-
-Wait for Carter to approve the estimate in chat before generating any files.
-
-### Step 5 — Generate Files (on approval)
-
-Run:
-```
-tsx src/proposal/generate-docx.ts
-```
-
-Output to `proposals/` folder. Filename: `CustomerName-Location-Proposal.docx`
-
-Then push to HCP:
-```
-npm run estimate proposals/CustomerName-Location-Proposal.docx --dry-run
-```
-Show Carter the parsed output. On confirmation:
-```
-npm run estimate proposals/CustomerName-Location-Proposal.docx
-```
-
-### Formatting Rules
-
-- Good / Better / Best is the default structure — never single-option unless Carter asks
-- Better option = projected total shown in Pricing Summary
-- Do NOT show labor/material breakdown in the customer proposal
-- Deposit shown as percent AND dollar amount of Better option
-- Terms and Conditions = full page, always present
-- Signature block required on every proposal (no Title field)
+50% for jobs over $5,000 (shown as percent and dollar amount where relevant).
 
 ## Company Defaults
 
@@ -122,20 +87,24 @@ src/
     parse-proposal.ts    — Claude parses raw text → ProposalData
   automations/
     estimates/
+      from-chat.ts           — PRIMARY: chat/MCA/MCC scope → HCP estimate (stdin JSON → stdout URL)
+      from-email.ts          — PRIMARY: email watcher → HCP estimate (same pipeline as from-chat)
       create-estimate.ts     — Playwright: fill HCP estimate form
-      from-proposal.ts       — CLI entry: file → parse → HCP
+      from-proposal.ts       — LEGACY: DOCX/PDF proposal file → parse → HCP
     jobs/list-jobs.ts        — Scrape scheduled/completed jobs
+  takeoff/cli.ts             — Blueprint takeoff (DWG/DXF/PDF/PNG → device counts, routing, labor)
 assets/
-  grizzly-proposal-template.docx   ← PUT YOUR TEMPLATE HERE
   grizzly-logo.jpeg                ← PUT YOUR LOGO HERE
-proposals/                         — Generated proposal files (gitignored)
+proposals/                         — LEGACY generated proposal files (gitignored)
 ```
+> `src/proposal/generate-docx.ts` + `from-proposal.ts` + `grizzly-proposal-template.docx`
+> are the **retired** Good/Better/Best DOCX proposal flow. The live estimate path is the
+> from-chat / from-email pipeline above — see "Estimate Builder (HCP pipeline)".
 
 ## Assets Setup (one-time)
 
-Copy into `assets/` before generating proposals:
-- `grizzly-proposal-template.docx` — Your approved Grizzly DOCX template with `{placeholder}` tags
-- `grizzly-logo.jpeg` — Grizzly logo
+- `grizzly-logo.jpeg` — Grizzly logo (used in `assets/`).
 
-The template should use `{field_name}` placeholders matching the fields in `ProposalContext`
-(see `src/proposal/generate-docx.ts` for the full list).
+> The `grizzly-proposal-template.docx` template and its `{field_name}` placeholders belong to
+> the retired DOCX proposal flow (`src/proposal/generate-docx.ts`). Not needed for the live
+> from-chat / from-email HCP estimate pipeline.
