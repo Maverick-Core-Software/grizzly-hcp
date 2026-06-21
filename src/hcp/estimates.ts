@@ -282,6 +282,58 @@ export async function searchCustomer(name: string): Promise<HcpCustomer | null> 
   }
 }
 
+// ─── Customer creation ────────────────────────────────────────────────────────
+
+/** Create a new customer in HCP. Returns the created customer or throws on failure. */
+export async function createCustomer(opts: {
+  name: string;
+  email: string;
+  phone?: string;
+}): Promise<HcpCustomer> {
+  const parts = opts.name.trim().split(/\s+/);
+  const firstName = parts[0] || opts.name;
+  const lastName = parts.slice(1).join(' ') || '';
+
+  const res = await hcpPost<{
+    id: string;
+    display_name: string;
+    addresses?: { data?: Array<{ id: string; street: string }> };
+  }>('/alpha/customers', {
+    first_name: firstName,
+    last_name: lastName,
+    email: opts.email,
+    phone_number: opts.phone ?? '',
+    addresses_attributes: [{ street: '' }],
+  });
+
+  const addr = res.addresses?.data?.[0];
+  return {
+    id: res.id,
+    name: res.display_name,
+    addressId: addr?.id ?? '',
+    address: addr?.street ?? '',
+  };
+}
+
+// ─── Technician assignment ────────────────────────────────────────────────────
+
+/**
+ * Assign a technician to an estimate and trigger their push notification.
+ * estimateUuid: est_... UUID from createEstimate
+ * employeeUuid: pro_... UUID — Carter's is pro_fec6f009ddfe47bcb388ee45a83c31f1
+ *
+ * The /api/estimates/ namespace uses a different UUID (best_... prefix) than the
+ * /alpha/ namespace (est_... prefix), so we fetch it first.
+ */
+export async function assignTechnician(estimateUuid: string, employeeUuids: string[]): Promise<void> {
+  const est = await hcpGet<{ uuid: string }>(`/api/estimates/${estimateUuid}`);
+  const apiUuid = est.uuid ?? estimateUuid;
+  await hcpPut(`/api/estimates/${apiUuid}/assignees`, {
+    service_pro_uuids: employeeUuids,
+    notify_pro: true,
+  });
+}
+
 // ─── Templates list ───────────────────────────────────────────────────────────
 
 export interface HcpTemplate {

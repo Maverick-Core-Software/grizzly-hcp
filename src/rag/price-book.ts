@@ -78,7 +78,7 @@ export async function findBestMatch(description: string, threshold = 0.6): Promi
   return best;
 }
 
-const RAG_SCORE_THRESHOLD = 0.68; // cosine similarity — tune up if you get false positives
+const RAG_SCORE_THRESHOLD = 0.60; // cosine similarity — junk vectors removed, lowered to catch near-miss short names
 
 /**
  * Match all line items at once. Tries RAG semantic search first (when online),

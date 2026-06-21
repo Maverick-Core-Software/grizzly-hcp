@@ -1,7 +1,9 @@
 /**
- * CLI: npm run estimate <path-to-proposal.pdf|.docx> [--dry-run] [--template <eot_uuid>]
+ * CLI: npm run estimate <path-to-proposal.pdf|.docx> [--dry-run] [--template <eot_uuid>] [--takeoff <blueprint.dwg|.dxf|.pdf>]
  *
  * Pipeline:
+ *   0. (Optional) Blueprint takeoff: parse DWG/DXF/PDF → extract device counts, routing lengths
+ *      Output is appended to the scope text before proposal parsing
  *   1. Extract raw text from PDF or DOCX
  *   2. Claude parses text → structured ProposalData
  *   3. Match line items against local price book
@@ -26,6 +28,8 @@ import {
   type HcpLineItem,
 } from '../../hcp/estimates.js';
 import { createPriceBookItem } from '../../hcp/price-book.js';
+import { runTakeoff } from '../../takeoff/index.js';
+import type { TakeoffResult } from '../../takeoff/types.js';
 
 // ─── CLI args ────────────────────────────────────────────────────────────────
 
@@ -34,9 +38,11 @@ const filePath    = args.find(a => !a.startsWith('--'));
 const dryRun      = args.includes('--dry-run');
 const tplIdx      = args.indexOf('--template');
 const templateArg = tplIdx !== -1 ? args[tplIdx + 1] : undefined;
+const takeoffIdx  = args.indexOf('--takeoff');
+const takeoffFile = takeoffIdx !== -1 ? args[takeoffIdx + 1] : undefined;
 
 if (!filePath) {
-  console.error('Usage: npm run estimate <file.pdf|.docx> [--dry-run] [--template <eot_uuid>]');
+  console.error('Usage: npm run estimate <file.pdf|.docx> [--dry-run] [--template <eot_uuid>] [--takeoff <blueprint.dwg|.dxf|.pdf>]');
   process.exit(1);
 }
 
@@ -61,9 +67,76 @@ function itemKind(description: string, category: string): HcpLineItem['kind'] {
   return 'labor';
 }
 
+/** Format TakeoffResult as a markdown block to prepend to proposal scope text. */
+function formatTakeoffContext(takeoff: TakeoffResult): string {
+  const deviceLines = Object.entries(takeoff.devices)
+    .filter(([, count]) => count > 0)
+    .map(([type, count]) => `- ${type}: ${count}`)
+    .join('\n');
+
+  const routingLines = Object.entries(takeoff.estimated_routing_lengths.by_type)
+    .filter(([, r]) => r.nominal_ft > 0)
+    .map(([type, r]) => `- ${type}: ~${Math.round(r.nominal_ft)} ft (${Math.round(r.min_ft)}–${Math.round(r.max_ft)} ft range)`)
+    .join('\n');
+
+  const panelLines = takeoff.panels.length > 0
+    ? takeoff.panels.map(p => `- Panel ${p.panelId}: ${p.circuits.length} circuits${p.amperage ? `, ${p.amperage}A` : ''}`).join('\n')
+    : '- None detected';
+
+  return [
+    '## Blueprint Takeoff Data',
+    '(Extracted from attached blueprint — verify before use)',
+    '',
+    '### Device Counts',
+    deviceLines || '(none detected)',
+    '',
+    '### Estimated Wire Routing Lengths',
+    routingLines || '(scale unknown or no DXF geometry)',
+    `Note: ${takeoff.estimated_routing_lengths.note}`,
+    '',
+    '### Panel Schedules',
+    panelLines,
+    '',
+    `### Labor Estimate`,
+    `- Rough-in: ${takeoff.labor.rough_in_hours.toFixed(1)} hrs`,
+    `- Trim-out: ${takeoff.labor.trim_out_hours.toFixed(1)} hrs`,
+    `- Panel work: ${takeoff.labor.panel_hours.toFixed(1)} hrs`,
+    `- Total: ${takeoff.labor.total_hours.toFixed(1)} hrs`,
+    '',
+    `Confidence: devices=${takeoff.confidence.device_counts}, routing=${takeoff.confidence.routing_lengths}`,
+    `Warnings: ${takeoff.warnings.length > 0 ? takeoff.warnings.map(w => w.message).join('; ') : 'none'}`,
+    '',
+  ].join('\n');
+}
+
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 async function run() {
+  // Step 0 (optional): Blueprint takeoff
+  let takeoffContext = '';
+  if (takeoffFile) {
+    const resolvedTakeoff = path.resolve(takeoffFile);
+    console.log('\nStep 0 — Running blueprint takeoff...');
+    console.log(`  File: ${resolvedTakeoff}`);
+    const takeoff = await runTakeoff(resolvedTakeoff);
+    takeoffContext = formatTakeoffContext(takeoff);
+    console.log(`  Takeoff complete: ${Object.values(takeoff.devices).reduce((a, b) => a + b, 0)} devices detected`);
+    console.log(`  Confidence: devices=${takeoff.confidence.device_counts}, routing=${takeoff.confidence.routing_lengths}`);
+    if (takeoff.warnings.length > 0) {
+      console.log(`  Warnings: ${takeoff.warnings.map(w => w.message).join('; ')}`);
+    }
+    console.log('\n  ⚠ REVIEW REQUIRED — Verify takeoff data before accepting into estimate.');
+    console.log('  Press Enter to continue or Ctrl+C to abort...');
+    await new Promise<void>(resolve => {
+      process.stdin.setRawMode?.(false);
+      process.stdin.resume();
+      process.stdin.once('data', () => {
+        process.stdin.pause();
+        resolve();
+      });
+    });
+  }
+
   // Step 1: Extract text
   console.log('Step 1/4 — Extracting text from document...');
   const rawText = await extractText(resolvedPath);
@@ -71,7 +144,9 @@ async function run() {
 
   // Step 2: Parse with Claude
   console.log('\nStep 2/4 — Parsing proposal with Claude...');
-  const proposal = await parseProposal(rawText);
+  // Augment raw text with takeoff data if available
+  const augmentedText = takeoffContext ? `${rawText}\n\n${takeoffContext}` : rawText;
+  const proposal = await parseProposal(augmentedText);
   const total = proposal.lineItems.reduce((s, i) => s + i.quantity * i.unitPrice, 0);
   console.log(`  Customer:   ${proposal.customer.name} — ${proposal.customer.address}`);
   console.log(`  Job type:   ${proposal.jobType ?? '(none)'}`);
