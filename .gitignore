@@ -3,7 +3,7 @@ dist/
 .env
 data/*.csv
 data/*.json
-auth/session/
+auth/
 proposals/
 *.log
 .playwright/
