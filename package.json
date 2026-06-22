@@ -16,6 +16,7 @@
     "push-jobs": "bash scripts/push-jobs.sh",
     "intercept": "tsx src/auth/intercept-api.ts",
     "add-item": "tsx src/hcp/add-item-cli.ts",
+    "watch-email": "tsx src/automations/estimates/email-watcher.ts",
     "takeoff": "tsx src/takeoff/cli.ts",
     "takeoff:validate": "tsx src/takeoff/cli.ts --validate-mode"
   },

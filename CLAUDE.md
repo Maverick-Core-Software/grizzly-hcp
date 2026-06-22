@@ -29,7 +29,7 @@ Both run the same steps:
 1. **Find/create customer** — `searchCustomer(name)`, falling back to email prefix, else `createCustomer(...)` (or an "Unknown Customer" placeholder if no info).
 2. **Create the HCP estimate** — `createEstimate(customer.id, customer.addressId)`.
 3. **Extract service items** — Haiku turns the scope into short price-book-style service names (`extractServiceItems`).
-4. **Match the price book** — `matchLineItems` against the live HCP price book; unmatched items are auto-saved to the price book at $0.
+4. **Match the price book** — `matchLineItems` against the live HCP price book; unmatched items get a flagged $0 line (`NEEDS_PRICING_FLAG`) and are returned in `unmatched[]`. They are **never** auto-written to the live price book (see `src/hcp/build-line-item.ts`).
 5. **Add line items** — `addLineItem` per matched item (materials/labor/discount kind inferred).
 6. **Assign technicians** — Carter + Jaime via `CARTER_TECH_ID` / `JAIME_TECH_ID`.
 7. **Return the HCP URL** — `https://pro.housecallpro.com/app/estimates/<uuid>`.
@@ -37,7 +37,7 @@ Both run the same steps:
 ### Scope generation
 
 The scope text fed to the pipeline is produced by the RAG, grounded in Grizzly's real data:
-- Email watcher: RAG `POST /estimate-stream` (see email-watcher `generateScope`).
+- Email watcher: RAG `POST /estimate-stream` (see `src/automations/estimates/email-watcher.ts` `generateScope`). Run with `npm run watch-email` (PM2: `mav-email-watcher`).
 - Chat (MCC/MCA): the server extracts customer + scope from the conversation, then spawns
   `from-chat.ts`. When RAG is offline a Claude fallback system prompt generates the scope.
 
@@ -73,6 +73,7 @@ routing lengths, and labor hours that feed into the scope before the pipeline ru
 | `npm run estimate <file> -- --template <eot_uuid>` | Same but applies a saved HCP template first |
 | `npm run templates` | List all saved HCP estimate templates and their UUIDs |
 | `npm run intercept` | Capture HCP API calls during manual browser session |
+| `npm run watch-email` | Poll Gmail inboxes → classify → scope → create HCP estimates (long-running; PM2 `mav-email-watcher`) |
 | `npm run run` | Pull scheduled jobs from HCP |
 
 ## Project Structure
@@ -89,6 +90,7 @@ src/
     estimates/
       from-chat.ts           — PRIMARY: chat/MCA/MCC scope → HCP estimate (stdin JSON → stdout URL)
       from-email.ts          — PRIMARY: email watcher → HCP estimate (same pipeline as from-chat)
+      email-watcher.ts       — long-running Gmail poller that feeds from-email.ts (npm run watch-email)
       create-estimate.ts     — Playwright: fill HCP estimate form
       from-proposal.ts       — LEGACY: DOCX/PDF proposal file → parse → HCP
     jobs/list-jobs.ts        — Scrape scheduled/completed jobs
