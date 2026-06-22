@@ -13,7 +13,7 @@ import 'dotenv/config';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { spawn } from 'node:child_process';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -95,6 +95,17 @@ async function getAttachment(account: string, emailId: string, attachmentId: str
   return gmailGet(`/attachment/${account}/${emailId}/${attachmentId}`);
 }
 
+// ── Sender deny-list ───────────────────────────────────────────────────────────
+// Mail from these senders is NEVER a customer estimate request — it's Housecall
+// Pro's own automated notifications (new-job/lead alerts, signed/approved estimate
+// copies, payment receipts, TradeWire marketing). Processing them would create
+// duplicate estimates for jobs HCP already has. Deterministic — runs before Haiku.
+const IGNORE_SENDER = /@(?:[a-z0-9-]+\.)*housecallpro\.com\b/i;
+
+export function isIgnoredSender(from: string): boolean {
+  return IGNORE_SENDER.test(from || '');
+}
+
 // ── Haiku classification ──────────────────────────────────────────────────────
 
 async function classifyEmail(email: Email): Promise<string> {
@@ -117,8 +128,14 @@ async function classifyEmail(email: Email): Promise<string> {
       max_tokens: 50,
       system: `You classify inbound emails to Grizzly Electrical, a licensed electrician company.
 Reply with EXACTLY ONE word:
-- estimate_request  (customer wants a quote, repair, installation, inspection, or any electrical service)
+- estimate_request  (a customer is describing electrical work they want quoted or done)
 - ignore  (spam, marketing, newsletters, automated alerts, receipts, or clearly unrelated)
+
+IMPORTANT: Housecall Pro and other CRM/system notifications are ALWAYS "ignore",
+even when they mention a job, estimate, or payment. Examples that are "ignore":
+"New job from your website", "Congrats on your new job", "Copy of signed estimate #...",
+"Response on estimate #... approved", payment/receipt notifications, any "[Customer] - $amount".
+Only classify as estimate_request when an actual person is asking for electrical work.
 
 One word only. No punctuation.`,
       messages: [{ role: 'user', content: preview }],
@@ -341,6 +358,12 @@ async function processEmail(account: string, email: Email): Promise<void> {
   const label = `[${account}] "${email.subject}" from ${email.from}`;
   console.log(`\n${label}`);
 
+  // Hard deny-list: Housecall Pro / CRM notifications never become estimates.
+  if (isIgnoredSender(email.from)) {
+    console.log('  → skip (Housecall Pro / automated notification)');
+    return;
+  }
+
   // Classify
   let classification: string;
   try {
@@ -506,4 +529,8 @@ async function main(): Promise<void> {
   setInterval(poll, POLL_MS);
 }
 
-main().catch(err => { console.error('Fatal:', err); process.exit(1); });
+// Only boot the poll loop when run directly (npm run watch-email), not when
+// imported by the self-check or other tooling.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch(err => { console.error('Fatal:', err); process.exit(1); });
+}
