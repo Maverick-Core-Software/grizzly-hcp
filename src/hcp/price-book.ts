@@ -2,8 +2,8 @@
  * HCP price book API — create and manage price book services.
  * Endpoint: POST /alpha/pricebook/services (multipart/form-data, prices in cents)
  */
-import { hcpGet, hcpPostForm } from './client.js';
-import { appendToCsv } from '../rag/price-book.js';
+import { hcpGet, hcpPostForm, hcpDelete } from './client.js';
+import { appendToCsv, removeFromCsv } from '../rag/price-book.js';
 import { indexPriceBookItem } from '../rag/client.js';
 
 export interface HcpPriceBookItem {
@@ -135,6 +135,51 @@ export async function createMaterialItem(item: {
   });
 
   return created;
+}
+
+/**
+ * List every service in the HCP price book (across all Electrical categories),
+ * with prices in dollars. Used by cleanup tooling to find $0 / unpriced items.
+ */
+export async function listAllServices(): Promise<Array<{ uuid: string; name: string; price: number; category: string }>> {
+  const industries = await hcpGet<{ data?: Array<{ uuid: string; name: string }> }>(
+    '/alpha/pricebook/industries'
+  );
+  const electrical = (industries.data ?? []).find(i => i.name.toLowerCase().includes('electrical'));
+  if (!electrical) throw new Error('Electrical industry not found in HCP price book');
+
+  const cats = await hcpGet<{ data?: Array<{ uuid: string; name: string }> }>(
+    `/alpha/pricebook/categories?pricebook_industry_uuid=${electrical.uuid}&id=${electrical.uuid}&page=1&page_size=100&sort_column=order_index&sort_direction=asc`
+  );
+
+  const out: Array<{ uuid: string; name: string; price: number; category: string }> = [];
+  for (const cat of cats.data ?? []) {
+    let page = 1;
+    while (true) {
+      const res = await hcpGet<{
+        data: Array<{ uuid: string; name: string; price: number }>;
+        total_pages_count: number;
+      }>(`/alpha/pricebook/services?pricebook_category_uuid=${cat.uuid}&page=${page}&page_size=100&sort_column=name&sort_direction=asc`);
+      for (const s of res.data) out.push({ uuid: s.uuid, name: s.name, price: s.price / 100, category: cat.name });
+      if (page >= res.total_pages_count) break;
+      page++;
+    }
+  }
+  return out;
+}
+
+/**
+ * Delete an item from the HCP price book and remove it from the local CSV cache.
+ * Routes by uuid prefix: olit_ → service, pbmat_ → material.
+ * NOTE: there is no RAG de-index endpoint, so a deleted item may linger in the
+ * RAG vector store until the collection is rebuilt — non-blocking for callers.
+ */
+export async function deletePriceBookItem(uuid: string): Promise<void> {
+  const endpoint = uuid.startsWith('pbmat_')
+    ? `/alpha/pricebook/materials/${uuid}`
+    : `/alpha/pricebook/services/${uuid}`;
+  await hcpDelete(endpoint);
+  await removeFromCsv(uuid).catch(() => { /* CSV may not contain it — fine */ });
 }
 
 /**

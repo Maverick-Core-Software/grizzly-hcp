@@ -14,10 +14,9 @@ import {
   createEstimate,
   addLineItem,
   assignTechnician,
-  type HcpLineItem,
 } from '../../hcp/estimates.js';
 import { matchLineItems } from '../../rag/price-book.js';
-import { createPriceBookItem } from '../../hcp/price-book.js';
+import { buildLineItem } from '../../hcp/build-line-item.js';
 
 function progress(msg: string) {
   process.stderr.write(`[progress] ${msg}\n`);
@@ -65,18 +64,6 @@ async function extractServiceItems(scope: string): Promise<Array<{ description: 
   const items = JSON.parse(m[0]) as Array<{ description: string; quantity: number; unitPrice: number }>;
   if (Array.isArray(items) && items.length > 0) return items;
   throw new Error('empty result');
-}
-
-function itemKind(description: string, category: string): HcpLineItem['kind'] {
-  const d = description.toLowerCase();
-  const c = category.toLowerCase();
-  if (d.includes('discount') || c.includes('discount')) return 'fixed discount';
-  if (c.includes('material') || d.includes('material') || d.includes('wire') ||
-      d.includes('conduit') || d.includes('panel') || d.includes('breaker') ||
-      d.includes('box') || d.includes('device') || d.includes('fixture')) {
-    return 'materials';
-  }
-  return 'labor';
 }
 
 async function run() {
@@ -160,39 +147,27 @@ async function run() {
 
   // ── Add line items ────────────────────────────────────────────────────────
 
+  // Items with no price book match are added at $0 with a NEEDS-PRICING flag
+  // (so the estimate stays complete) and reported back for manual pricing.
+  // They are deliberately NOT written to the live HCP price book.
+  const unmatched: string[] = [];
+
   for (let i = 0; i < matched.length; i++) {
     const m = matched[i];
-    const pb = m.match?.item;
-
-    const item: HcpLineItem = {
-      name:          pb?.name ?? m.description,
-      description:   pb ? m.description : undefined,
-      unitPrice:     (pb && pb.price > 0) ? pb.price : (m.unitPrice ?? 0),
-      quantity:      m.quantity,
-      kind:          itemKind(m.description, pb?.category ?? ''),
-      taxable:       false,
-      serviceItemId: pb?.uuid,
-      orderIndex:    i,
-    };
+    const { item, matched: didMatch } = buildLineItem(m, i);
 
     await addLineItem(estimate.uuid, item, i);
 
-    const label = pb
-      ? `${Math.round(m.match!.score * 100)}% → "${pb.name}" @ $${pb.price}`
-      : `no match — "${ m.description}" @ $0`;
+    const label = didMatch
+      ? `${Math.round(m.match!.score * 100)}% → "${m.match!.item.name}" @ $${m.match!.item.price}`
+      : `no match — "${m.description}" @ $0 (needs manual pricing)`;
     progress(`Item ${i + 1}/${matched.length}: ${label}`);
 
-    // Auto-save unmatched items to HCP pricebook
-    if (!pb) {
-      try {
-        const saved = await createPriceBookItem({
-          name: m.description,
-          unitPrice: 0,
-          category: itemKind(m.description, '') === 'materials' ? 'Materials' : 'Labor',
-        });
-        progress(`  → saved to pricebook (${saved.uuid.slice(0, 8)}...)`);
-      } catch {}
-    }
+    if (!didMatch) unmatched.push(m.description);
+  }
+
+  if (unmatched.length) {
+    progress(`${unmatched.length} item(s) need manual pricing in HCP: ${unmatched.join(', ')}`);
   }
 
   // ── Assign techs ──────────────────────────────────────────────────────────
@@ -210,7 +185,7 @@ async function run() {
 
   const estimateUrl = `https://pro.housecallpro.com/app/estimates/${estimate.uuid}`;
   progress(`Done! ${estimateUrl}`);
-  process.stdout.write(JSON.stringify({ success: true, estimateUrl, estimateUuid: estimate.uuid }));
+  process.stdout.write(JSON.stringify({ success: true, estimateUrl, estimateUuid: estimate.uuid, unmatched }));
 }
 
 run().catch(err => {

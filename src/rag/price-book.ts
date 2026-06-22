@@ -183,6 +183,32 @@ export async function appendToCsv(item: Omit<PriceBookItem, 'price'> & { price: 
   _cache = null; // force reload on next use
 }
 
+/**
+ * Remove the row(s) with the given price-book uuid from the local pricebook.csv
+ * and invalidate the in-memory cache. Returns the number of rows removed.
+ * Used when an item is deleted from the HCP price book so the local cache stays in sync.
+ */
+export async function removeFromCsv(uuid: string): Promise<number> {
+  const raw = await fs.readFile(CSV_PATH, 'utf-8');
+  const lines = raw.split('\n');
+  const header = lines[0];
+  const body = lines.slice(1);
+
+  // uuid is column index 3 (Industry, Industry UUID, Category, UUID, ...)
+  const kept = body.filter(line => {
+    if (!line.trim()) return false;
+    const cols = parseCsvLine(line);
+    return cols[3] !== uuid;
+  });
+
+  const removed = body.filter(l => l.trim()).length - kept.length;
+  if (removed > 0) {
+    await fs.writeFile(CSV_PATH, [header, ...kept].join('\n'), 'utf-8');
+    _cache = null;
+  }
+  return removed;
+}
+
 /** Minimal CSV parser that handles quoted fields with embedded commas/newlines */
 function parseCsvLine(line: string): string[] {
   const result: string[] = [];

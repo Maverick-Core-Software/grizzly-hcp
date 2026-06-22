@@ -7,16 +7,16 @@
  *         JSON { success: false, error }
  */
 import 'dotenv/config';
+import { pathToFileURL } from 'node:url';
 import {
   searchCustomer,
   createCustomer,
   createEstimate,
   addLineItem,
   assignTechnician,
-  type HcpLineItem,
 } from '../../hcp/estimates.js';
 import { matchLineItems } from '../../rag/price-book.js';
-import { createPriceBookItem } from '../../hcp/price-book.js';
+import { buildLineItem } from '../../hcp/build-line-item.js';
 
 // Emails from us — use body content for customer info instead of sender
 const INTERNAL_EMAILS = new Set([
@@ -61,10 +61,12 @@ async function extractCustomerFromBody(body: string): Promise<{ name: string; em
 }
 
 /**
- * Extract distinct billable work items from an email body as SHORT service names.
+ * Extract distinct billable work items from a job scope (or email body) as SHORT service names.
  * Produces 2-5 word names that match pricebook naming conventions for better semantic search.
+ * The RAG-generated scope is far richer than a raw email body (often a 10+ item breakdown),
+ * so token/char limits match from-chat.ts to avoid truncating it.
  */
-async function extractServiceItems(emailBody: string): Promise<Array<{ description: string; quantity: number; unitPrice: number }>> {
+async function extractServiceItems(text: string): Promise<Array<{ description: string; quantity: number; unitPrice: number }>> {
   try {
     const res = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
@@ -75,9 +77,9 @@ async function extractServiceItems(emailBody: string): Promise<Array<{ descripti
       },
       body: JSON.stringify({
         model: 'claude-haiku-4-5-20251001',
-        max_tokens: 300,
+        max_tokens: 400,
         system: [
-          'You are an electrical service dispatcher. Extract distinct electrical work items from this customer email.',
+          'You are an electrical service dispatcher. Extract distinct electrical work items from this job scope or customer email.',
           'Write each as a SHORT service name (2-6 words) using the same naming style as an electrician\'s price book.',
           'Examples of good short service names:',
           '  "my GFCI stopped working" → "Replace GFCI Receptacle"',
@@ -89,13 +91,13 @@ async function extractServiceItems(emailBody: string): Promise<Array<{ descripti
           'Return JSON only — no prose: [{"description":"short name","quantity":1,"unitPrice":0}]',
           'One item per distinct task. If work involves both labor steps that are part of the same service, keep it as ONE item.',
         ].join('\n'),
-        messages: [{ role: 'user', content: emailBody.slice(0, 1500) }],
+        messages: [{ role: 'user', content: text.slice(0, 3000) }],
       }),
     });
     if (!res.ok) throw new Error(`Haiku extract → ${res.status}`);
     const data = await res.json();
-    const text = (data.content?.[0]?.text || '').trim();
-    const m = text.match(/\[[\s\S]*\]/);
+    const responseText = (data.content?.[0]?.text || '').trim();
+    const m = responseText.match(/\[[\s\S]*\]/);
     if (!m) throw new Error('no JSON array');
     const items = JSON.parse(m[0]) as Array<{ description: string; quantity: number; unitPrice: number }>;
     if (Array.isArray(items) && items.length > 0) return items;
@@ -106,16 +108,13 @@ async function extractServiceItems(emailBody: string): Promise<Array<{ descripti
   }
 }
 
-function itemKind(description: string, category: string): HcpLineItem['kind'] {
-  const d = description.toLowerCase();
-  const c = category.toLowerCase();
-  if (d.includes('discount') || c.includes('discount')) return 'fixed discount';
-  if (c.includes('material') || d.includes('material') || d.includes('wire') ||
-      d.includes('conduit') || d.includes('panel') || d.includes('breaker') ||
-      d.includes('box') || d.includes('device') || d.includes('fixture')) {
-    return 'materials';
-  }
-  return 'labor';
+/**
+ * Choose the text to extract service items from. The RAG-generated `scope` is a detailed
+ * multi-item breakdown and is strongly preferred; the raw email `body` is only a fallback
+ * for when scope is empty/whitespace. Exported for the self-check below.
+ */
+export function pickExtractionSource(scope: string | undefined, body: string): string {
+  return scope?.trim() ? scope : body;
 }
 
 async function run() {
@@ -171,50 +170,36 @@ async function run() {
   // Create estimate
   const estimate = await createEstimate(customer.id, customer.addressId);
 
-  // Extract work items from the email body as short pricebook-style service names.
-  // Short names (2-5 words) match pricebook naming conventions far better than
-  // verbose customer descriptions from parseProposal.
-  const workItems = await extractServiceItems(body);
+  // Extract work items as short pricebook-style service names. Prefer the RAG-generated
+  // `scope` (a detailed multi-item breakdown) over the raw email `body`, falling back to
+  // body only when scope is empty. Short names (2-5 words) match pricebook naming far
+  // better than verbose customer descriptions. (Mirrors from-chat.ts, which uses scope.)
+  const workItems = await extractServiceItems(pickExtractionSource(scope, body));
   console.error(`[from-email] Extracted ${workItems.length} service item(s): ${workItems.map(i => i.description).join(', ')}`);
 
   const matched = await matchLineItems(workItems);
 
+  // Items with no price book match are added at $0 with a NEEDS-PRICING flag
+  // (so the estimate stays complete) and reported back for manual pricing.
+  // They are deliberately NOT written to the live HCP price book.
+  const unmatched: string[] = [];
+
   for (let i = 0; i < matched.length; i++) {
     const m = matched[i];
-    const pb = m.match?.item;
-
-    const item: HcpLineItem = {
-      name:          pb?.name ?? m.description,
-      description:   pb ? m.description : undefined,
-      unitPrice:     (pb && pb.price > 0) ? pb.price : (m.unitPrice ?? 0),
-      quantity:      m.quantity,
-      kind:          itemKind(m.description, pb?.category ?? ''),
-      taxable:       false,
-      serviceItemId: pb?.uuid,
-      orderIndex:    i,
-    };
+    const { item, matched: didMatch } = buildLineItem(m, i);
 
     await addLineItem(estimate.uuid, item, i);
 
-    let label = pb
-      ? `PB ${Math.round(m.match!.score * 100)}%: "${pb.name}" @ $${pb.price}`
-      : `no match: "${m.description}" @ $0`;
-
-    // Auto-save unmatched items to HCP pricebook + RAG so they appear next time
-    if (!pb) {
-      try {
-        const saved = await createPriceBookItem({
-          name:      m.description,
-          unitPrice: 0,
-          category:  itemKind(m.description, '') === 'materials' ? 'Materials' : 'Labor',
-        });
-        label += ` → saved to PB (${saved.uuid})`;
-      } catch (e) {
-        label += ` (PB save failed: ${e instanceof Error ? e.message.slice(0, 60) : e})`;
-      }
-    }
-
+    const label = didMatch
+      ? `PB ${Math.round(m.match!.score * 100)}%: "${m.match!.item.name}" @ $${m.match!.item.price}`
+      : `no match: "${m.description}" @ $0 (needs manual pricing)`;
     console.error(`[from-email] Item ${i + 1}: ${label}`);
+
+    if (!didMatch) unmatched.push(m.description);
+  }
+
+  if (unmatched.length) {
+    console.error(`[from-email] ${unmatched.length} item(s) need manual pricing: ${unmatched.join(', ')}`);
   }
 
   // Assign techs
@@ -229,9 +214,12 @@ async function run() {
   }
 
   const estimateUrl = `https://pro.housecallpro.com/app/estimates/${estimate.uuid}`;
-  process.stdout.write(JSON.stringify({ success: true, estimateUrl, estimateUuid: estimate.uuid }));
+  process.stdout.write(JSON.stringify({ success: true, estimateUrl, estimateUuid: estimate.uuid, unmatched }));
 }
 
-run().catch(err => {
-  process.stdout.write(JSON.stringify({ success: false, error: err.message }));
-});
+// Only run the pipeline when executed directly (not when imported by the self-check).
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  run().catch(err => {
+    process.stdout.write(JSON.stringify({ success: false, error: err.message }));
+  });
+}
