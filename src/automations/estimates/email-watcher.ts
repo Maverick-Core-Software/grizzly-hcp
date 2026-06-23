@@ -279,6 +279,33 @@ async function runBlueprintTakeoff(filename: string, base64Data: string): Promis
   }
 }
 
+// ── Electrical content filter for extracted attachments ──────────────────────
+// Runs a Haiku pass over raw extracted PDF/DOCX text to return only the
+// electrically-relevant details, preventing blueprint non-electrical content
+// (plumbing, hot tubs, HVAC, structural) from contaminating the RAG scope.
+async function summarizeAttachmentForElectrical(filename: string, rawText: string): Promise<string> {
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-api-key': ANTH_KEY, 'anthropic-version': '2023-06-01' },
+    body: JSON.stringify({
+      model: MODEL_HAIKU,
+      max_tokens: 300,
+      system: [
+        'You are an electrical estimating assistant. Extract ONLY the electrically-relevant details from this document.',
+        'Include: panel specs, circuit counts, outlet/switch/fixture counts, wire gauge, breaker sizes, EV charger specs, service size, load calculations, electrical room locations.',
+        'Ignore: plumbing, HVAC, hot tubs, structural/architectural notes, non-electrical rooms, finishes, landscaping.',
+        'If no electrical details are present, respond with exactly: NO_ELECTRICAL_DETAILS',
+        'Be concise — two to five sentences or a short list.',
+      ].join('\n'),
+      messages: [{ role: 'user', content: `File: ${filename}\n\n${rawText.slice(0, 6000)}` }],
+    }),
+  });
+  if (!res.ok) throw new Error(`Haiku attachment summary → ${res.status}`);
+  const data: any = await res.json();
+  const summary = (data.content?.[0]?.text || '').trim();
+  return summary === 'NO_ELECTRICAL_DETAILS' ? '' : summary;
+}
+
 // ── RAG scope generation ──────────────────────────────────────────────────────
 
 async function generateScope(emailContext: string): Promise<string> {
@@ -396,7 +423,11 @@ async function processEmail(account: string, email: Email): Promise<void> {
         console.log(`  extracting ${name}`);
         const attData = await getAttachment(account, email.id, att.id);
         const text = await extractFileBase64(name, attData.data_base64);
-        if (text) attachmentNotes.push(`[${name}]\n${text.slice(0, 6000)}`);
+        if (text) {
+          const summary = await summarizeAttachmentForElectrical(name, text);
+          if (summary) attachmentNotes.push(`[Attachment: ${name} — electrical details]\n${summary}`);
+          else console.log(`  ${name}: no electrical details found — attachment excluded from scope`);
+        }
 
       } else if (IMAGE_EXT.test(name) || IMAGE_MIME.test(mime)) {
         console.log(`  describing image: ${name}`);
@@ -428,9 +459,11 @@ async function processEmail(account: string, email: Email): Promise<void> {
     '',
     'Customer message:',
     bodyText.slice(0, 3000),
-    attachmentNotes.length ? `\n${attachmentNotes.join('\n\n').slice(0, 8000)}` : '',
+    attachmentNotes.length
+      ? `\nAttachment context (electrical details only — non-electrical content pre-filtered):\n${attachmentNotes.join('\n\n').slice(0, 8000)}`
+      : '',
     '',
-    'Generate a preliminary scope of work for this electrical estimate. List the likely work items, materials, and NEC code considerations. Do NOT ask follow-up questions — produce the best scope possible from the information provided.',
+    'Generate a preliminary scope of work for this ELECTRICAL estimate. List ONLY electrical work items, materials, and NEC code considerations. Do NOT include plumbing, HVAC, hot tubs, structural, or any non-electrical work even if mentioned in attachments. Do NOT ask follow-up questions — produce the best scope possible from the information provided.',
     '',
     'GRIZZLY ELECTRICAL DEFAULT ASSUMPTIONS (apply unless the customer message says otherwise):',
     '- EV chargers: assume 48A (50A breaker, 6 AWG wire) unless a specific amperage is stated.',
