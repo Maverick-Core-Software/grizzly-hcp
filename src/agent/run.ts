@@ -60,9 +60,11 @@ async function run() {
 
     // Log any tool uses from the response
     if (result.toolResults?.length) {
-      const tools = (result.toolResults as unknown as Array<{ toolName: string }>).map(t => t.toolName);
+      const tools = (result.toolResults as unknown as Array<{ toolName: string }>)
+        .map(t => t.toolName)
+        .filter(Boolean);
       toolsUsed.push(...tools);
-      progress(`Used tools: ${tools.join(', ')}`);
+      if (tools.length) progress(`Used tools: ${tools.join(', ')}`);
     }
 
     logAudit({
@@ -79,7 +81,7 @@ async function run() {
     });
 
     progress('Done.');
-    process.stdout.write(JSON.stringify({ success: true, response }));
+    process.stdout.write(JSON.stringify({ success: true, response }), () => process.exit(0));
   } catch (e) {
     const error = e instanceof Error ? e.message : String(e);
     logAudit({
@@ -94,10 +96,10 @@ async function run() {
       result: `error: ${error}`,
       sensitiveRefs: [],
     });
-    process.stdout.write(JSON.stringify({ success: false, error }));
+    process.stdout.write(JSON.stringify({ success: false, error }), () => process.exit(1));
   }
 }
 
 run().catch(err => {
-  process.stdout.write(JSON.stringify({ success: false, error: err.message }));
+  process.stdout.write(JSON.stringify({ success: false, error: err.message }), () => process.exit(1));
 });
