@@ -42,14 +42,13 @@ export async function ragEstimate(
 }
 
 export async function ragDocs(query: string, topK = 5): Promise<DocsResult[]> {
-  const res = await fetch(`${RAG_BASE}/pi-docs`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ query, top_k: topK }),
-  });
-  if (!res.ok) throw new Error(`RAG /pi-docs failed: ${res.status} ${await res.text()}`);
-  const data: { results: DocsResult[] } = await res.json();
-  return data.results;
+  const { answer, sources } = await ragAsk(query, topK);
+  return (sources as Array<{ score: number; type: string; source: string; text: string }>).map(s => ({
+    library: s.type ?? '',
+    source: s.source ?? '',
+    text: s.text ?? answer,
+    score: s.score ?? 0,
+  }));
 }
 
 export async function lookupCustomer(name: string): Promise<string> {

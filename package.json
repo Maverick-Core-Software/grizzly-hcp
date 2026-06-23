@@ -14,6 +14,7 @@
     "push-pricebook": "bash scripts/push-pricebook.sh",
     "push-customers": "bash scripts/push-customers.sh",
     "push-jobs": "bash scripts/push-jobs.sh",
+    "sync-estimates": "tsx src/hcp/sync-estimates.ts",
     "intercept": "tsx src/auth/intercept-api.ts",
     "add-item": "tsx src/hcp/add-item-cli.ts",
     "watch-email": "tsx src/automations/estimates/email-watcher.ts",

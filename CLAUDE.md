@@ -8,9 +8,11 @@ and integrates with the Maverick RAG API on Proxmox for estimating intelligence.
 The Maverick RAG API is at `http://192.168.1.12:8181` (LAN — same network as CartersPC).
 
 Available endpoints:
-- `POST /ask` — general Q&A over all indexed documents (customers, price book, NEC, Oncor, etc.)
+- `POST /ask` — general Q&A; queries both `reference_docs` (NEC 2026, Oncor, etc.) and `grizzly_hcp` (customers, jobs)
 - `POST /estimate` — conversational estimating with history, grounded in Grizzly's real data
-- `POST /pi-docs` — raw document retrieval by semantic query
+- `POST /estimate-stream` — streaming version of `/estimate`
+- `POST /pricebook/search` — semantic search over the `pricebook` collection
+- `POST /code` — raw context chunks from `coding_docs` collection
 
 Use `src/rag/client.ts` for all RAG calls. Never call the RAG URL directly in new code.
 
