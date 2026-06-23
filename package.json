@@ -18,10 +18,14 @@
     "add-item": "tsx src/hcp/add-item-cli.ts",
     "watch-email": "tsx src/automations/estimates/email-watcher.ts",
     "takeoff": "tsx src/takeoff/cli.ts",
-    "takeoff:validate": "tsx src/takeoff/cli.ts --validate-mode"
+    "takeoff:validate": "tsx src/takeoff/cli.ts --validate-mode",
+    "voice-server": "tsx src/agent/voice-server.ts",
+    "run": "tsx src/automations/jobs/list-jobs.ts"
   },
   "dependencies": {
+    "@ai-sdk/anthropic": "^3.0.85",
     "@anthropic-ai/sdk": "^0.104.2",
+    "@mastra/core": "^1.45.0",
     "docxtemplater": "^3.68.7",
     "dotenv": "^16.4.5",
     "dxf": "^2.3.0",
@@ -40,6 +44,7 @@
     "@types/node": "^22.0.0",
     "@types/pdf-parse": "^1.1.5",
     "@types/uuid": "^10.0.0",
+    "@types/ws": "^8.18.1",
     "tsx": "^4.19.0",
     "typescript": "^5.7.0"
   }

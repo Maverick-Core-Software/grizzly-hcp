@@ -2,21 +2,27 @@
  * Creates an HCP estimate from a chat-based job scope.
  * Called by MCC/MCA server via child_process.spawn.
  *
- * stdin:  JSON { scope, customerName?, customerEmail?, customerPhone? }
- * stdout: JSON { success: true, estimateUrl, estimateUuid }
+ * stdin:  JSON {
+ *   scope?,          — free-text job description (either scope or lineItems required)
+ *   lineItems?,      — pre-structured items from conversation (skips RAG matching)
+ *   customerName?,
+ *   customerEmail?,
+ *   customerPhone?,
+ *   techIds?,        — pro_... UUIDs to assign; defaults to Carter + Jaime if omitted
+ *   depositPercent?, — 50 = 50% deposit; 0 or omitted = no deposit
+ *   operationId?,    — for idempotency; generated here if not supplied
+ * }
+ * stdout: JSON { success: true, estimateUrl, estimateUuid, unmatched }
  *         JSON { success: false, error }
- * stderr: human-readable progress lines prefixed with [progress]
+ * stderr: human-readable [progress] lines
  */
 import 'dotenv/config';
-import {
-  searchCustomer,
-  createCustomer,
-  createEstimate,
-  addLineItem,
-  assignTechnician,
-} from '../../hcp/estimates.js';
+import { randomUUID } from 'crypto';
+import { searchCustomer, createCustomer } from '../../hcp/estimates.js';
 import { matchLineItems } from '../../rag/price-book.js';
-import { buildLineItem } from '../../hcp/build-line-item.js';
+import { buildLineItem, itemKind } from '../../hcp/build-line-item.js';
+import { commitEstimateWorkflow } from '../../agent/workflows/private-hcp-writes/commit-estimate.js';
+import type { CommitLineItem } from '../../agent/workflows/private-hcp-writes/commit-estimate.js';
 
 function progress(msg: string) {
   process.stderr.write(`[progress] ${msg}\n`);
@@ -68,55 +74,81 @@ async function extractServiceItems(scope: string): Promise<Array<{ description: 
 
 async function run() {
   const payload = JSON.parse(await readStdin()) as {
-    scope: string;
+    scope?: string;
+    lineItems?: Array<{ name: string; quantity: number; unitPrice: number; type: string; serviceItemId?: string }>;
+    newPricebookItems?: Array<{ name: string; description: string; category?: string; unitPrice: number; quantity: number; saveToBook: boolean }>;
     customerName?: string;
     customerEmail?: string;
     customerPhone?: string;
+    techIds?: string[];
+    depositPercent?: number;
+    operationId?: string;
   };
 
-  const { scope, customerName, customerEmail, customerPhone } = payload;
+  const {
+    scope,
+    lineItems,
+    newPricebookItems,
+    customerName,
+    customerEmail,
+    customerPhone,
+    techIds: incomingTechIds,
+    depositPercent,
+    operationId = randomUUID(),
+  } = payload;
 
-  if (!scope?.trim()) {
-    process.stdout.write(JSON.stringify({ success: false, error: 'No scope provided.' }));
+  if (!scope?.trim() && !lineItems?.length) {
+    process.stdout.write(JSON.stringify({ success: false, error: 'No scope or line items provided.' }));
     return;
   }
 
+  // Tech IDs: use provided list, or fall back to Carter + Jaime
+  const techIds: string[] = incomingTechIds?.length
+    ? incomingTechIds
+    : [process.env.CARTER_TECH_ID, process.env.JAIME_TECH_ID].filter(Boolean) as string[];
+
   // ── Find or create customer ───────────────────────────────────────────────
 
-  let customer: Awaited<ReturnType<typeof searchCustomer>>;
+  let customerId: string;
+  let addressId: string;
 
   if (customerName) {
     progress(`Searching for customer: ${customerName}...`);
-    customer = await searchCustomer(customerName);
+    let found = await searchCustomer(customerName);
 
-    if (!customer && customerEmail) {
+    if (!found && customerEmail) {
       const emailPrefix = customerEmail.split('@')[0].replace(/[._-]/g, ' ');
-      customer = await searchCustomer(emailPrefix);
+      found = await searchCustomer(emailPrefix);
     }
 
-    if (!customer) {
+    if (!found) {
       progress(`Customer not found — creating ${customerName}...`);
       try {
-        customer = await createCustomer({
+        const created = await createCustomer({
           name: customerName,
           email: customerEmail || '',
           phone: customerPhone,
         });
-        progress(`Created customer: ${customer.name}`);
+        progress(`Created customer: ${created.name}`);
+        customerId = created.id;
+        addressId = created.addressId;
       } catch (e) {
         const err = e instanceof Error ? e.message : String(e);
         process.stdout.write(JSON.stringify({ success: false, error: `Could not create customer "${customerName}": ${err}` }));
         return;
       }
     } else {
-      progress(`Found customer: ${customer.name}`);
+      progress(`Found customer: ${found.name}`);
+      customerId = found.id;
+      addressId = found.addressId;
     }
   } else {
-    // No customer info — create a placeholder so the estimate is created in HCP
     progress('No customer info provided — creating placeholder...');
     try {
-      customer = await createCustomer({ name: 'Unknown Customer', email: '' });
+      const placeholder = await createCustomer({ name: 'Unknown Customer', email: '' });
       progress('Placeholder customer created — update in HCP after.');
+      customerId = placeholder.id;
+      addressId = placeholder.addressId;
     } catch (e) {
       const err = e instanceof Error ? e.message : String(e);
       process.stdout.write(JSON.stringify({ success: false, error: `Could not create placeholder customer: ${err}` }));
@@ -124,68 +156,113 @@ async function run() {
     }
   }
 
-  // ── Create estimate ───────────────────────────────────────────────────────
+  // ── Build line items ──────────────────────────────────────────────────────
+
+  let commitLineItems: CommitLineItem[];
+
+  if (lineItems?.length) {
+    // Pre-structured items from conversation — skip extraction + RAG matching
+    progress(`Using ${lineItems.length} pre-structured item(s) from conversation`);
+    commitLineItems = lineItems.map((li, i) => ({
+      name: li.name,
+      description: li.name,
+      unitPrice: li.unitPrice,
+      quantity: li.quantity,
+      kind: itemKind(li.name, '') as CommitLineItem['kind'],
+      serviceItemId: li.serviceItemId,
+      orderIndex: i,
+    }));
+    // Append agent-proposed new items (not in pricebook)
+    if (newPricebookItems?.length) {
+      progress(`Adding ${newPricebookItems.length} new item(s) proposed by agent`);
+      newPricebookItems.forEach((nb, j) => {
+        commitLineItems.push({
+          name: nb.name,
+          description: nb.description,
+          unitPrice: nb.unitPrice,
+          quantity: nb.quantity,
+          kind: itemKind(nb.name, nb.description) as CommitLineItem['kind'],
+          orderIndex: commitLineItems.length + j,
+          isNew: true,
+        });
+      });
+    }
+  } else {
+    progress('Extracting service items from scope...');
+    let workItems: Array<{ description: string; quantity: number; unitPrice: number }>;
+    try {
+      workItems = await extractServiceItems(scope!);
+      progress(`Found ${workItems.length} service item(s): ${workItems.map(i => i.description).join(', ')}`);
+    } catch (e) {
+      progress(`Item extraction failed: ${e instanceof Error ? e.message : e} — using fallback`);
+      workItems = [{ description: 'Electrical Service', quantity: 1, unitPrice: 0 }];
+    }
+
+    progress('Matching to pricebook...');
+    const matched = await matchLineItems(workItems);
+    commitLineItems = matched.map((m, i) => {
+      const { item } = buildLineItem(m, i);
+      return {
+        name: item.name,
+        description: item.description,
+        unitPrice: item.unitPrice,
+        quantity: item.quantity,
+        kind: item.kind,
+        serviceItemId: item.serviceItemId,
+        orderIndex: i,
+      };
+    });
+  }
+
+  // Progress: how many matched
+  const unmatchedCount = commitLineItems.filter(li => !li.serviceItemId).length;
+  if (unmatchedCount) {
+    progress(`${unmatchedCount} item(s) will need manual pricing in HCP`);
+  }
+
+  // ── Commit via workflow (idempotent, audited) ─────────────────────────────
+
+  // Items the agent wants saved to the pricebook permanently
+  const newPricebookCommit = (newPricebookItems ?? [])
+    .filter(nb => nb.saveToBook)
+    .map(nb => ({
+      name: nb.name,
+      description: nb.description,
+      price: nb.unitPrice,
+      category: nb.category,
+    }));
 
   progress('Creating estimate in HCP...');
-  const estimate = await createEstimate(customer.id, customer.addressId);
-  progress(`Estimate created (${estimate.uuid.slice(0, 8)}...)`);
+  const result = await commitEstimateWorkflow({
+    operationId,
+    customer: { id: customerId, addressId, name: customerName || 'Unknown Customer' },
+    lineItems: commitLineItems,
+    newPricebookItems: newPricebookCommit.length ? newPricebookCommit : undefined,
+    techIds,
+    depositPercent,
+  });
 
-  // ── Extract and match line items ──────────────────────────────────────────
-
-  progress('Extracting service items from scope...');
-  let workItems: Array<{ description: string; quantity: number; unitPrice: number }>;
-  try {
-    workItems = await extractServiceItems(scope);
-    progress(`Found ${workItems.length} service item(s): ${workItems.map(i => i.description).join(', ')}`);
-  } catch (e) {
-    progress(`Item extraction failed: ${e instanceof Error ? e.message : e} — using fallback`);
-    workItems = [{ description: 'Electrical Service', quantity: 1, unitPrice: 0 }];
+  if (!result.success) {
+    if (result.manualRecovery) progress(`Recovery: ${result.manualRecovery}`);
+    process.stdout.write(JSON.stringify({ success: false, error: result.error }));
+    return;
   }
 
-  progress('Matching to pricebook...');
-  const matched = await matchLineItems(workItems);
-
-  // ── Add line items ────────────────────────────────────────────────────────
-
-  // Items with no price book match are added at $0 with a NEEDS-PRICING flag
-  // (so the estimate stays complete) and reported back for manual pricing.
-  // They are deliberately NOT written to the live HCP price book.
-  const unmatched: string[] = [];
-
-  for (let i = 0; i < matched.length; i++) {
-    const m = matched[i];
-    const { item, matched: didMatch } = buildLineItem(m, i);
-
-    await addLineItem(estimate.uuid, item, i);
-
-    const label = didMatch
-      ? `${Math.round(m.match!.score * 100)}% → "${m.match!.item.name}" @ $${m.match!.item.price}`
-      : `no match — "${m.description}" @ $0 (needs manual pricing)`;
-    progress(`Item ${i + 1}/${matched.length}: ${label}`);
-
-    if (!didMatch) unmatched.push(m.description);
+  if (result.unmatched.length) {
+    progress(`${result.unmatched.length} item(s) need manual pricing: ${result.unmatched.join(', ')}`);
   }
 
-  if (unmatched.length) {
-    progress(`${unmatched.length} item(s) need manual pricing in HCP: ${unmatched.join(', ')}`);
-  }
+  const techLabel = techIds.length
+    ? `Assigned ${techIds.length} tech(s)`
+    : 'No techs assigned';
+  progress(`${techLabel}. Done! ${result.estimateUrl}`);
 
-  // ── Assign techs ──────────────────────────────────────────────────────────
-
-  const techId = process.env.CARTER_TECH_ID;
-  if (techId) {
-    try {
-      const uuids = [techId, process.env.JAIME_TECH_ID].filter(Boolean) as string[];
-      await assignTechnician(estimate.uuid, uuids);
-      progress('Assigned Carter + Jaime');
-    } catch (e) {
-      progress(`Tech assignment failed: ${e instanceof Error ? e.message : e}`);
-    }
-  }
-
-  const estimateUrl = `https://pro.housecallpro.com/app/estimates/${estimate.uuid}`;
-  progress(`Done! ${estimateUrl}`);
-  process.stdout.write(JSON.stringify({ success: true, estimateUrl, estimateUuid: estimate.uuid, unmatched }));
+  process.stdout.write(JSON.stringify({
+    success: true,
+    estimateUrl: result.estimateUrl,
+    estimateUuid: result.estimateUuid,
+    unmatched: result.unmatched,
+  }));
 }
 
 run().catch(err => {
