@@ -3,6 +3,8 @@ dist/
 .env
 data/*.csv
 data/*.json
+data/*.jsonl
+test-fixtures/
 auth/
 proposals/
 *.log
