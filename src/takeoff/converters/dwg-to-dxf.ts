@@ -5,7 +5,9 @@ import { join, basename } from 'path';
 import { tmpdir } from 'os';
 import { randomUUID } from 'crypto';
 
-const ODA_TIMEOUT_MS = 30_000;
+// ODA's first launch in a session does a cold GUI/Qt init that can exceed 30s;
+// warm launches finish in seconds. 120s covers the cold start.
+const ODA_TIMEOUT_MS = 120_000;
 
 function getOdaPath(): string {
   const p = process.env['ODA_CONVERTER_PATH'];
@@ -75,8 +77,9 @@ export async function dwgToDxf(dwgPath: string): Promise<string> {
   const dxfName = dwgName.replace(/\.dwg$/i, '.dxf');
   const dxfPath = join(outDir, dxfName);
 
-  // ODA CLI: <binary> <srcDir> <outDir> DXF "ACAD2018" 0 1 "*.DWG"
-  const args = [srcDir, outDir, 'DXF', 'ACAD2018', '0', '1', '*.DWG'];
+  // ODA CLI signature: <binary> <srcDir> <outDir> <outVersion> <outFileType> <recurse> <audit> <filter>
+  // OutputVersion comes BEFORE OutputFileType. Swapping them makes ODA silently no-op (exit 0, no file).
+  const args = [srcDir, outDir, 'ACAD2018', 'DXF', '0', '1', '*.DWG'];
 
   let stdout = '';
   let stderr = '';

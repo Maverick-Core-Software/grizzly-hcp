@@ -5,7 +5,10 @@ import path from 'path';
 import { randomUUID } from 'crypto';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
-import pdfParse from 'pdf-parse';
+// pdf-parse's index.js runs a debug block at import (reads a bundled test PDF) when
+// module.parent is falsy — which it is under tsx/ESM, crashing the whole module graph.
+// Import the library entry directly to skip that block.
+import pdfParse from 'pdf-parse/lib/pdf-parse.js';
 import { fromPath } from 'pdf2pic';
 import sharp from 'sharp';
 import type { ParsedPdfPage } from '../types.js';
