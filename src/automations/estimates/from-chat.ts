@@ -35,36 +35,40 @@ async function readStdin(): Promise<string> {
 }
 
 async function extractServiceItems(scope: string): Promise<Array<{ description: string; quantity: number; unitPrice: number }>> {
-  const res = await fetch('https://api.anthropic.com/v1/messages', {
+  const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
-      'x-api-key': process.env.ANTHROPIC_API_KEY!,
-      'anthropic-version': '2023-06-01',
+      'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY!}`,
     },
     body: JSON.stringify({
-      model: 'claude-haiku-4-5-20251001',
+      model: 'z-ai/glm-5-turbo',
       max_tokens: 400,
-      system: [
-        'You are an electrical service dispatcher. Extract distinct electrical work items from this job scope.',
-        'Write each as a SHORT service name (2-6 words) using the same naming style as an electrician\'s price book.',
-        'Examples of good short service names:',
-        '  "replace GFCI" → "Replace GFCI Receptacle"',
-        '  "add switch and ceiling light" → "Add New Switch and Fixture"',
-        '  "EV charger install next to panel" → "EV Car Charger Install Next to Panel"',
-        '  "200A panel upgrade" → "200A Panel Upgrade"',
-        '  "ceiling fan install" → "Ceiling Fan Installation"',
-        '  "outlet not working" → "Troubleshoot Level 1"',
-        'Return JSON only — no prose: [{"description":"short name","quantity":1,"unitPrice":0}]',
-        'One item per distinct task. Combine related steps of the same service into ONE item.',
-      ].join('\n'),
-      messages: [{ role: 'user', content: scope.slice(0, 3000) }],
+      messages: [
+        {
+          role: 'system',
+          content: [
+            'You are an electrical service dispatcher. Extract distinct electrical work items from this job scope.',
+            'Write each as a SHORT service name (2-6 words) using the same naming style as an electrician\'s price book.',
+            'Examples of good short service names:',
+            '  "replace GFCI" → "Replace GFCI Receptacle"',
+            '  "add switch and ceiling light" → "Add New Switch and Fixture"',
+            '  "EV charger install next to panel" → "EV Car Charger Install Next to Panel"',
+            '  "200A panel upgrade" → "200A Panel Upgrade"',
+            '  "ceiling fan install" → "Ceiling Fan Installation"',
+            '  "outlet not working" → "Troubleshoot Level 1"',
+            'Return JSON only — no prose: [{"description":"short name","quantity":1,"unitPrice":0}]',
+            'One item per distinct task. Combine related steps of the same service into ONE item.',
+          ].join('\n'),
+        },
+        { role: 'user', content: scope.slice(0, 3000) },
+      ],
     }),
   });
 
-  if (!res.ok) throw new Error(`Haiku extract → ${res.status}`);
+  if (!res.ok) throw new Error(`GLM extract → ${res.status}`);
   const data = await res.json();
-  const text = (data.content?.[0]?.text || '').trim();
+  const text = (data.choices?.[0]?.message?.content || '').trim();
   const m = text.match(/\[[\s\S]*\]/);
   if (!m) throw new Error('no JSON array in response');
   const items = JSON.parse(m[0]) as Array<{ description: string; quantity: number; unitPrice: number }>;

@@ -7,16 +7,13 @@
  *         JSON { success: false, error }
  */
 import 'dotenv/config';
+import { randomUUID } from 'crypto';
 import { pathToFileURL } from 'node:url';
-import {
-  searchCustomer,
-  createCustomer,
-  createEstimate,
-  addLineItem,
-  assignTechnician,
-} from '../../hcp/estimates.js';
+import { searchCustomer, createCustomer } from '../../hcp/estimates.js';
 import { matchLineItems } from '../../rag/price-book.js';
 import { buildLineItem } from '../../hcp/build-line-item.js';
+import { commitEstimateWorkflow } from '../../agent/workflows/private-hcp-writes/commit-estimate.js';
+import type { CommitLineItem } from '../../agent/workflows/private-hcp-writes/commit-estimate.js';
 
 // Emails from us — use body content for customer info instead of sender
 const INTERNAL_EMAILS = new Set([
@@ -39,23 +36,24 @@ function parseSender(from: string): { name: string; email: string } {
 }
 
 async function extractCustomerFromBody(body: string): Promise<{ name: string; email?: string; phone?: string }> {
-  const res = await fetch('https://api.anthropic.com/v1/messages', {
+  const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
-      'x-api-key': process.env.ANTHROPIC_API_KEY!,
-      'anthropic-version': '2023-06-01',
+      'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY!}`,
     },
     body: JSON.stringify({
-      model: 'claude-haiku-4-5-20251001',
+      model: 'z-ai/glm-5-turbo',
       max_tokens: 200,
-      system: 'Extract the CUSTOMER\'s contact info from this field note written by an electrician. Return JSON only: {"name":"Full Name","email":"their email if present","phone":"their phone if present"}. Omit fields that are absent. name is required — use "Unknown" if truly missing.',
-      messages: [{ role: 'user', content: body.slice(0, 2000) }],
+      messages: [
+        { role: 'system', content: 'Extract the CUSTOMER\'s contact info from this field note written by an electrician. Return JSON only: {"name":"Full Name","email":"their email if present","phone":"their phone if present"}. Omit fields that are absent. name is required — use "Unknown" if truly missing.' },
+        { role: 'user', content: body.slice(0, 2000) },
+      ],
     }),
   });
-  if (!res.ok) throw new Error(`Haiku customer extract → ${res.status}`);
+  if (!res.ok) throw new Error(`GLM customer extract → ${res.status}`);
   const data = await res.json();
-  const text = (data.content?.[0]?.text || '').trim();
+  const text = (data.choices?.[0]?.message?.content || '').trim();
   const match = text.match(/\{[\s\S]*\}/);
   return match ? JSON.parse(match[0]) : { name: 'Unknown' };
 }
@@ -68,35 +66,39 @@ async function extractCustomerFromBody(body: string): Promise<{ name: string; em
  */
 async function extractServiceItems(text: string): Promise<Array<{ description: string; quantity: number; unitPrice: number }>> {
   try {
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
+    const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
-        'x-api-key': process.env.ANTHROPIC_API_KEY!,
-        'anthropic-version': '2023-06-01',
+        'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY!}`,
       },
       body: JSON.stringify({
-        model: 'claude-haiku-4-5-20251001',
+        model: 'z-ai/glm-5-turbo',
         max_tokens: 400,
-        system: [
-          'You are an electrical service dispatcher. Extract distinct electrical work items from this job scope or customer email.',
-          'Write each as a SHORT service name (2-6 words) using the same naming style as an electrician\'s price book.',
-          'Examples of good short service names:',
-          '  "my GFCI stopped working" → "Replace GFCI Receptacle"',
-          '  "add a switch and ceiling light where there is none" → "Add New Switch and Fixture"',
-          '  "EV charger install in garage next to panel" → "EV Car Charger Install Next to Panel"',
-          '  "panel upgrade to 200 amps" → "200A Panel Upgrade"',
-          '  "ceiling fan install" → "Ceiling Fan Installation"',
-          '  "outlet not working" → "Troubleshoot Level 1"',
-          'Return JSON only — no prose: [{"description":"short name","quantity":1,"unitPrice":0}]',
-          'One item per distinct task. If work involves both labor steps that are part of the same service, keep it as ONE item.',
-        ].join('\n'),
-        messages: [{ role: 'user', content: text.slice(0, 3000) }],
+        messages: [
+          {
+            role: 'system',
+            content: [
+              'You are an electrical service dispatcher. Extract distinct electrical work items from this job scope or customer email.',
+              'Write each as a SHORT service name (2-6 words) using the same naming style as an electrician\'s price book.',
+              'Examples of good short service names:',
+              '  "my GFCI stopped working" → "Replace GFCI Receptacle"',
+              '  "add a switch and ceiling light where there is none" → "Add New Switch and Fixture"',
+              '  "EV charger install in garage next to panel" → "EV Car Charger Install Next to Panel"',
+              '  "panel upgrade to 200 amps" → "200A Panel Upgrade"',
+              '  "ceiling fan install" → "Ceiling Fan Installation"',
+              '  "outlet not working" → "Troubleshoot Level 1"',
+              'Return JSON only — no prose: [{"description":"short name","quantity":1,"unitPrice":0}]',
+              'One item per distinct task. If work involves both labor steps that are part of the same service, keep it as ONE item.',
+            ].join('\n'),
+          },
+          { role: 'user', content: text.slice(0, 3000) },
+        ],
       }),
     });
-    if (!res.ok) throw new Error(`Haiku extract → ${res.status}`);
+    if (!res.ok) throw new Error(`GLM extract → ${res.status}`);
     const data = await res.json();
-    const responseText = (data.content?.[0]?.text || '').trim();
+    const responseText = (data.choices?.[0]?.message?.content || '').trim();
     const m = responseText.match(/\[[\s\S]*\]/);
     if (!m) throw new Error('no JSON array');
     const items = JSON.parse(m[0]) as Array<{ description: string; quantity: number; unitPrice: number }>;
@@ -167,54 +169,51 @@ async function run() {
     }
   }
 
-  // Create estimate
-  const estimate = await createEstimate(customer.id, customer.addressId);
-
   // Extract work items as short pricebook-style service names. Prefer the RAG-generated
   // `scope` (a detailed multi-item breakdown) over the raw email `body`, falling back to
   // body only when scope is empty. Short names (2-5 words) match pricebook naming far
-  // better than verbose customer descriptions. (Mirrors from-chat.ts, which uses scope.)
+  // better than verbose customer descriptions.
   const workItems = await extractServiceItems(pickExtractionSource(scope, body));
   console.error(`[from-email] Extracted ${workItems.length} service item(s): ${workItems.map(i => i.description).join(', ')}`);
 
   const matched = await matchLineItems(workItems);
-
-  // Items with no price book match are added at $0 with a NEEDS-PRICING flag
-  // (so the estimate stays complete) and reported back for manual pricing.
-  // They are deliberately NOT written to the live HCP price book.
-  const unmatched: string[] = [];
-
-  for (let i = 0; i < matched.length; i++) {
-    const m = matched[i];
-    const { item, matched: didMatch } = buildLineItem(m, i);
-
-    await addLineItem(estimate.uuid, item, i);
-
-    const label = didMatch
+  const commitLineItems: CommitLineItem[] = matched.map((m, i) => {
+    const { item } = buildLineItem(m, i);
+    const label = item.serviceItemId
       ? `PB ${Math.round(m.match!.score * 100)}%: "${m.match!.item.name}" @ $${m.match!.item.price}`
       : `no match: "${m.description}" @ $0 (needs manual pricing)`;
     console.error(`[from-email] Item ${i + 1}: ${label}`);
+    return {
+      name: item.name,
+      description: item.description,
+      unitPrice: item.unitPrice,
+      quantity: item.quantity,
+      kind: item.kind,
+      serviceItemId: item.serviceItemId,
+      orderIndex: i,
+    };
+  });
 
-    if (!didMatch) unmatched.push(m.description);
+  const techIds = [process.env.CARTER_TECH_ID, process.env.JAIME_TECH_ID].filter(Boolean) as string[];
+
+  const result = await commitEstimateWorkflow({
+    operationId: randomUUID(),
+    customer: { id: customer.id, addressId: customer.addressId, name: customerName },
+    lineItems: commitLineItems,
+    techIds,
+  });
+
+  if (!result.success) {
+    if (result.manualRecovery) console.error(`[from-email] Recovery: ${result.manualRecovery}`);
+    process.stdout.write(JSON.stringify({ success: false, error: result.error }));
+    return;
   }
 
-  if (unmatched.length) {
-    console.error(`[from-email] ${unmatched.length} item(s) need manual pricing: ${unmatched.join(', ')}`);
+  if (result.unmatched.length) {
+    console.error(`[from-email] ${result.unmatched.length} item(s) need manual pricing: ${result.unmatched.join(', ')}`);
   }
 
-  // Assign techs
-  const techId = process.env.CARTER_TECH_ID;
-  if (techId) {
-    try {
-      const uuids = [techId, process.env.JAIME_TECH_ID].filter(Boolean) as string[];
-      await assignTechnician(estimate.uuid, uuids);
-    } catch (e) {
-      console.error(`[from-email] assignment failed — ${e instanceof Error ? e.message : e}`);
-    }
-  }
-
-  const estimateUrl = `https://pro.housecallpro.com/app/estimates/${estimate.uuid}`;
-  process.stdout.write(JSON.stringify({ success: true, estimateUrl, estimateUuid: estimate.uuid, unmatched }));
+  process.stdout.write(JSON.stringify({ success: true, estimateUrl: result.estimateUrl, estimateUuid: result.estimateUuid, unmatched: result.unmatched }));
 }
 
 // Only run the pipeline when executed directly (not when imported by the self-check).
