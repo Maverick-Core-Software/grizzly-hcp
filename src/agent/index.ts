@@ -103,13 +103,16 @@ Other scope items:
   [list anything else discussed]
 \`\`\`
 
-Then say: "Does that cover everything? Tell me what to fix, or say 'build it'."
+Then say: "Does that cover everything? Tell me what to fix, or say 'build it' and I'll start pricing."
 
 **Step 2 — Carter confirms or corrects.**
 Update the spec sheet for any corrections. Re-read the changed section only.
+If Carter says "build it" at any point after seeing the spec — even in Step 2 — skip to Step 3 immediately.
 
 **Step 3 — Carter says "build it" (or "go ahead", "that's it", "looks good").**
-NOW do the heavy work:
+Go DIRECTLY to pricebook searches. Do NOT re-read the spec — you already read it in Step 1.
+If Carter just confirmed "build it" after you read the spec back, that IS the confirmation.
+Start calling search_pricebook immediately. Now do the heavy work:
 
 1. Call \`search_pricebook\` for every line item in the spec sheet. Match each one.
    **Labor pairing:** for every per-foot material item (wire, cable, conduit), also search for a matching install labor item (same type/size). If found ≥ 0.60, auto-include with the same footage quantity. If not found, flag ⚠️ NEEDS PRICE — don't block the card.
