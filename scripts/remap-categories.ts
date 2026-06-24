@@ -71,6 +71,7 @@ function parseCsvLine(line: string): string[] {
     else { cur += ch; }
   }
   result.push(cur);
+  // ponytail: no embedded-quote ("") decode; upgrade if cells ever contain literal quotes
   return result;
 }
 
@@ -118,7 +119,6 @@ async function main() {
       continue;
     }
 
-    // Remap
     cols[2] = mapped;
     const newLine = cols.map(escapeCsv).join(',');
     newBody.push(newLine);
