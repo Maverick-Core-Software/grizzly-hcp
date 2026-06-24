@@ -17,6 +17,7 @@
     "sync-estimates": "tsx src/hcp/sync-estimates.ts",
     "intercept": "tsx src/auth/intercept-api.ts",
     "add-item": "tsx src/hcp/add-item-cli.ts",
+    "update-pricebook": "tsx src/hcp/update-pricebook-from-csv.ts",
     "watch-email": "tsx src/automations/estimates/email-watcher.ts",
     "takeoff": "tsx src/takeoff/cli.ts",
     "takeoff:validate": "tsx src/takeoff/cli.ts --validate-mode",
