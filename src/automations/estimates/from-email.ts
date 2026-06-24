@@ -12,6 +12,7 @@ import { pathToFileURL } from 'node:url';
 import { searchCustomer, createCustomer } from '../../hcp/estimates.js';
 import { matchLineItems } from '../../rag/price-book.js';
 import { buildLineItem } from '../../hcp/build-line-item.js';
+import { applyHdAutoPricing } from './hd-auto-price.js';
 import { commitEstimateWorkflow } from '../../agent/workflows/private-hcp-writes/commit-estimate.js';
 import type { CommitLineItem } from '../../agent/workflows/private-hcp-writes/commit-estimate.js';
 
@@ -177,6 +178,10 @@ async function run() {
   console.error(`[from-email] Extracted ${workItems.length} service item(s): ${workItems.map(i => i.description).join(', ')}`);
 
   const matched = await matchLineItems(workItems);
+
+  // HD auto-pricing: for unmatched material items, fetch Home Depot price + 45% markup
+  await applyHdAutoPricing(matched, msg => console.error(`[from-email] ${msg}`), false);
+
   const commitLineItems: CommitLineItem[] = matched.map((m, i) => {
     const { item } = buildLineItem(m, i);
     const label = item.serviceItemId

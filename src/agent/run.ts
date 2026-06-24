@@ -58,13 +58,12 @@ async function run() {
       // toolResults is Promise<ToolResultChunk[]> — awaited after iteration completes
       const streamResult = await agent.stream(fullPrompt);
 
-      let fullText = '';
       for await (const chunk of streamResult.textStream) {
-        process.stdout.write(`data: ${chunk}`);
-        fullText += chunk;
+        process.stdout.write(`data: ${chunk}\n`);
       }
 
       // toolResults is a Promise — await it after the stream closes
+      // Each element is ToolResultChunk: { type: 'tool-result', payload: { toolName, ... } }
       const toolResults = await streamResult.toolResults;
       const tools = Array.isArray(toolResults)
         ? toolResults.map(t => t.payload?.toolName).filter(Boolean)
@@ -94,8 +93,9 @@ async function run() {
       const response = typeof result.text === 'string' ? result.text : JSON.stringify(result);
 
       if (result.toolResults?.length) {
-        const tools = (result.toolResults as unknown as Array<{ toolName: string }>)
-          .map(t => t.toolName).filter(Boolean);
+        // generate() toolResults shape: { id, name, result, error } — not toolName
+        const tools = (result.toolResults as unknown as Array<{ name: string }>)
+          .map(t => t.name).filter(Boolean);
         toolsUsed.push(...tools);
         if (tools.length) progress(`Used tools: ${tools.join(', ')}`);
       }
