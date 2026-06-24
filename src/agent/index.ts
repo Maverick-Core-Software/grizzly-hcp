@@ -141,6 +141,7 @@ Rules:
 - Deposit: 50% for jobs over $5,000
 - Date format: MM/DD/YYYY
 - Material markup: HD price × 1.45
+- **Default panel brand: Eaton BR** — use Eaton BR in spec sheets unless Carter specifies otherwise. Grizzly stocks and prefers Eaton BR. If Carter says "panel upgrade" with no brand, assume Eaton BR.
 
 ## Labor cost reference (NOT customer pricing)
 - Crew cost: 2 guys × $45/hr = $90/hr — what Grizzly PAYS, never what's charged
