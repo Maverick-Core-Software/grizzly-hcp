@@ -31,14 +31,13 @@ export async function fetchHomeDepotPrice(description: string): Promise<HdResult
 
     const first = products[0] as Record<string, unknown>;
     const pricing = first?.pricing as Record<string, unknown> | undefined;
-    const price = Number((pricing as Record<string, unknown>)?.value ?? (pricing as Record<string, unknown>)?.original ?? 0);
+    const price = Number(pricing?.value ?? pricing?.original ?? 0);
     if (!price || price <= 0) return null;
 
     const identifiers = first?.identifiers as Record<string, unknown> | undefined;
     const name = String((identifiers as Record<string, unknown>)?.productLabel ?? description);
 
-    // Determine unit from product info
-    const uom = String((pricing as Record<string, unknown>)?.uom ?? '').toLowerCase();
+    const uom = String(pricing?.uom ?? '').toLowerCase();
     const unit: HdResult['unit'] = uom.includes('ft') || uom.includes('foot') || uom.includes('linear')
       ? 'per ft'
       : 'each';
