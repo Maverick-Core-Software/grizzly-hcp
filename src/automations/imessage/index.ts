@@ -7,6 +7,9 @@ import { createMaverickAgent } from '../../agent/index.js';
 const histories = new Map<string, Array<{ role: 'user' | 'assistant'; content: string }>>();
 const MAX_HISTORY = 20; // 10 exchanges
 
+// Dedup: Photon occasionally delivers the same message twice
+const seenIds = new Set<string>();
+
 const app = await Spectrum({
   projectId: process.env.PROJECT_ID!,
   projectSecret: process.env.PROJECT_SECRET!,
@@ -19,6 +22,8 @@ console.log('[imessage] Maverick iMessage listener ready');
 for await (const [space, message] of app.messages) {
   if (message.direction !== 'inbound') continue;
   if (message.content.type !== 'text') continue;
+  if (seenIds.has(message.id)) continue;
+  seenIds.add(message.id);
 
   const prompt = (message.content as { type: 'text'; text: string }).text.trim();
   const senderId = message.sender?.id ?? 'unknown';
