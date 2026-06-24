@@ -18,11 +18,20 @@
  */
 import 'dotenv/config';
 import { randomUUID } from 'crypto';
+import { appendFileSync } from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import { searchCustomer, createCustomer } from '../../hcp/estimates.js';
-import { matchLineItems } from '../../rag/price-book.js';
+import { matchLineItems, appendToCsv } from '../../rag/price-book.js';
 import { buildLineItem, itemKind } from '../../hcp/build-line-item.js';
+import { fetchHomeDepotPrice } from '../../agent/tools/reads/home-depot.js';
 import { commitEstimateWorkflow } from '../../agent/workflows/private-hcp-writes/commit-estimate.js';
 import type { CommitLineItem } from '../../agent/workflows/private-hcp-writes/commit-estimate.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const AUTO_PRICED_LOG = path.resolve(__dirname, '../../../data/auto-priced.jsonl');
+
+const LABOR_KEYWORDS = ['install', 'run', 'pull', 'labor', 'service call', 'diagnostic', 'inspection', 'permit'];
 
 function progress(msg: string) {
   process.stderr.write(`[progress] ${msg}\n`);
@@ -195,6 +204,52 @@ async function run() {
 
     progress('Matching to pricebook...');
     const matched = await matchLineItems(workItems);
+
+    // ── HD auto-pricing pass for unmatched materials ──────────────────────────
+    // For items with no pricebook match, try Home Depot pricing (materials only).
+    await Promise.all(matched.map(async m => {
+      if (m.match) return; // already matched — skip
+      const desc = m.description.toLowerCase();
+      const isLabor = LABOR_KEYWORDS.some(kw => desc.includes(kw));
+      if (isLabor) return; // labor stays as NEEDS_PRICING_FLAG
+
+      progress(`HD lookup: ${m.description}...`);
+      const hdResult = await fetchHomeDepotPrice(m.description);
+      if (!hdResult) {
+        progress(`HD: no result for "${m.description}" — will flag for manual pricing`);
+        return;
+      }
+
+      const grizzlyPrice = +(hdResult.price * 1.45).toFixed(2);
+      const uuid = `hd_auto_${randomUUID().replace(/-/g, '').slice(0, 16)}`;
+      const pbItem = {
+        category: 'Materials',
+        uuid,
+        name: hdResult.name,
+        description: m.description,
+        price: grizzlyPrice,
+        priceStr: `$${grizzlyPrice.toFixed(2)}`,
+        unitOfMeasure: hdResult.unit === 'per ft' ? 'Linear Foot' : 'Each',
+      };
+
+      // Patch match result in-place so buildLineItem picks it up
+      m.match = { item: pbItem, score: 1.0, exact: false };
+
+      progress(`HD auto-priced "${m.description}": HD $${hdResult.price} → Grizzly $${grizzlyPrice}`);
+
+      if (!DRY_RUN) {
+        await appendToCsv(pbItem);
+        appendFileSync(
+          AUTO_PRICED_LOG,
+          JSON.stringify({ ts: new Date().toISOString(), description: m.description, hdName: hdResult.name, hdPrice: hdResult.price, grizzlyPrice, uuid }) + '\n',
+          'utf-8',
+        );
+      } else {
+        progress(`[dry-run] would append to pricebook.csv + auto-priced.jsonl`);
+      }
+    }));
+    // ─────────────────────────────────────────────────────────────────────────
+
     commitLineItems = matched.map((m, i) => {
       const { item } = buildLineItem(m, i);
       return {
