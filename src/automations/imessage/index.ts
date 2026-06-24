@@ -16,7 +16,7 @@ const app = await Spectrum({
   providers: [imessage.config()],
 });
 
-const agent = createMaverickAgent('text');
+const agent = createMaverickAgent('imessage');
 console.log('[imessage] Maverick iMessage listener ready');
 
 for await (const [space, message] of app.messages) {
