@@ -1,0 +1,106 @@
+# renames.tsv — uuid<TAB>corrected_name
+# Lines starting with # are ignored.
+# DELETE:<uuid> removes the row entirely.
+
+# ── DELETE test item ──────────────────────────────────────────────────────────
+DELETE:olit_af2ca050ead74cba9b9a1b4ced4614b2
+
+# ── AMP FORMAT + combined fixes ───────────────────────────────────────────────
+olit_74533089f1f9442db8afa2fdb545b70e	200A Main Breaker
+pbmat_d8f3022ff45f4a16809f9d67e669655e	15A 125 V Commercial Grade Receptacle
+
+# ── PER FOOT SUFFIX fixes ────────────────────────────────────────────────────
+olit_e2775e76a679424a90eeca94b5973c40	Dig Trench In Soft Ground, per ft
+olit_d0a9545e36ec40d9a857e71f9cac2d1e	Install Conduit (1.25"-2"), per ft
+olit_0d7d90dff5b74cae99548385c1ee2ef4	Install Conduit (1/2"-1"), per ft
+olit_3438e149f80d43beb1c86e08e62a567f	Saw Cut Concrete, per ft
+olit_1fd6001b351e4bdb9314262d88fc9cc9	Generator Quick Connect Gas Line (Over 15'), per ft
+olit_8b1275c7cddf4f9393c3a48a67a83d12	Generator Quick Connect Gas Line (Under 15'), per ft
+pbmat_34b7093daa0f4f109455a3ad8fe1b2dc	2/0-2/0-2/0 Aluminum SER Cable, per ft
+pbmat_df0abb12c20247cd855b9cbe31f6fc75	2/0-2/0-2/0 Aluminum SER Cable, per ft
+olit_c4483bf50f3b4d4794f82cbced8adc88	Install 2/0 SER Service Entrance Cable, per ft
+olit_bf2a10f7534f409899cd491baa4d552e	Run New Service Cable Wire Up To 200A/125 (Open Attic), per ft
+
+# ── NOT TITLE CASE fixes ─────────────────────────────────────────────────────
+# Service Entrance and Panel
+olit_2c1b3a4b7d8c489b9acc9f530b54fc4a	Install Wire Grommets (Up To 4)
+
+# Install category
+olit_ea2f7e83c83549d49c9b57f7aaf8e42e	Add Receptacle By Penetrating Outside From Interior Receptacle
+olit_fe7641c2c9c34c16bc59d4984441b4ca	Ceiling Fan (Over 12' Ceiling)
+olit_732b895747ec4919afd569fd451010c3	Ceiling Fan (Up To 12' Ceiling)
+olit_944095cd532c4ef4b81a07ef9ad85130	Hang Flat Panel TV (In-Wall Wiring)
+olit_53543cfdb9e14312a6938c93cd31a78e	Hang Flat Panel TV (No Wiring/<55")
+olit_aa8d317cd94c4c3aabe2818438a022a2	Hang Flat Panel TV (No Wiring/>55")
+olit_b28c9a04204c441faa5a7a81e0d3c4cb	Install Al To CU Pigtails With New Receptacles
+olit_7eeff2eae16a4f5b91f443583afa3205	Install Ballast Bypass LED Tubes (Up To 2 Lamps)
+olit_473b2718cc434d369d9d745bb9a43882	Install Ballast Bypass LED Tubes (Up To 4 Lamps)
+olit_e9fdb4a6b3304e79aff539dad1859f31	Install Dryer Plug
+olit_9973b39713184b949eada96017e77ee5	Install EV Car Charger (Stud Cavity Next To Panel)
+olit_46e2218fd7fe4c19a566769058601e94	Install New 15/20a Circuit (Up To 50')
+olit_47a989535b5d4c37b4d59b75ceee3ad3	Install New 220v 30a Circuit (Up To 10')
+olit_e223ca3cf26e45c68c86e5e3826e8d83	Install New 220v 50a Circuit (Next To Panel)
+olit_ef13caacfeb043e9ae796c0e87254013	Install New Low Voltage Landscape Lights (Includes Light)
+olit_f15c754f321b4f9e964921a7207fa5f2	Quad Receptacle
+olit_95f8ba022418454f9d463610b567e7d6	Replace Light Fixture (Owner Provided)
+olit_0c293c5e89ee47c6a761e7751ba992bb	Replace Recessed Lighting With Slim Downlights
+olit_60a80f4f44fb48d382bfcb0be0e7ed68	Replace Smoke Detector (Up To 12')
+olit_7bbf7f0eacc44a4e951a56d00b077324	Replace Smoke/ Carbon Monoxide Detector (Up To 12')
+olit_e1c43c872a8940e08ac366ed8190247e	Secure Device In Wall
+olit_c083233774e047c688d84d22d2ffb1af	Spa Circuit
+olit_1ca387852fbe4031b1124008b09c0124	Install LED Flat Panel
+
+# Google category
+olit_e3752d42eb334d4f9bbb58516de3384b	Install Fan
+olit_426d25a636c549edaf6c84eea5474354	Install Ground Wire
+olit_4c84bd1116284c4bb288ea444bd152e1	Install Light Fixtures
+olit_09361873b363496eb781a15e6a93e6b2	Install Outdoor Lighting
+olit_8d4a99cf12ba4ef3a5b40a43d495a9b9	Install Outlets or Switches
+olit_ed7d16f165314b489e533b85dbe9548e	Install Security System
+olit_08334de00b1549f1a9cb5a67770a98fd	Relocate Outlets or Switches
+olit_2aaec523a03c4c32b65d91921c837004	Repair Fan
+olit_ab7775fa9c944341a10155b56ce3925d	Repair Light Fixtures
+olit_0b9c0452b1c9476aac8623dcba4629fa	Repair Outlets or Switches
+olit_50bbda61b8e2433c8ee1f4e95defdd45	Repair Panel
+olit_ebe85bba59f2442a8976666146f1f416	Replace or Upgrade Panel
+olit_feed551cd76c405686684d63eb17b0f0	Restore Power
+
+# New Build/ Remodel category
+olit_e1f5d86485c247d5acac583eca86d5ee	15/20a Home Runs (Up To 150')
+olit_297549e82347473588b9c551c82b41c3	Change 2-Gang To 3-Gang Box And Add Switchleg
+olit_29a6b7d4e2a349eb8d51386fd862c1eb	Change Single-Gang To 2-Gang Box And Add Switchleg
+olit_71c533fae0434174812cc03d0c94a759	Change Toggle 3-Way Switch To Decora 3-Way (1-10)
+olit_4364da0e51f149358089f306049cbb3a	Change Toggle 3-Way Switch To Decora 3-Way Switch (11+ Items)
+olit_8aa93d9d4bda4cbea9e2c5197f2254cf	Change Toggle Device To Decora Device (1-10)
+olit_2890e7151f764159a6b9b24becfd2b83	Change Toggle Device To Decora Device (11-40)
+olit_40ed1c3eb4754756947015d60eba5581	Change Toggle Device To Decora Device (41+ Items)
+olit_2929ad6730524158b9415134b2dc0782	Move Receptacle To Countertop Height
+olit_95dd131b9fb74565820c510b648db075	Relocate 1-2 Gang Switchbox (Up To 20')
+olit_692901b60bac44f4b6443a182e02fbe7	Relocate 3-4 Gang Switchbox (Up To 20')
+olit_ee0277152fa64535b714b8992d291e80	Relocate Receptacle Box (Up To 20')
+olit_66829cdb648843dbadab858fd15cb8fe	Remove Aluminum Wiring
+
+# Generator Install Items
+olit_7a6f57d9e7304993a29e9775087578fb	Generator Inlet With Interlock
+
+# Ethernet and Data
+olit_0de8bdd5115140faa02d62a4c359eec5	Install HDMI Concealed In Wall For TV
+
+# Fixtures
+pbmat_8d1dfc59934a41628cd5c266d3f92b4a	Downlight With Night Light Upgrade
+
+# Devices
+pbmat_f2ada2373fdc475ea9a82630337f56d2	6 In Round Gimbal CCT Canless Recessed Light
+pbmat_75222e27fcff4d6496fb4509b65affaf	6 In. Adjustable CCT Canless IC Rated Dimmable Indoor, Outdoor
+pbmat_a30a161957444b689aa851bd27223bbe	6 In. Color And Tunable White Slim Canless Smart Wi-Fi LED Recessed Downlight
+
+# Tools/Equipment
+pbmat_5cd6fe5606734d6b9598e8513efcbd7f	33' Scissor Lift (1 Day)
+pbmat_e16a3a98123248eca86b78710c2966b7	Indoor Scaffolding (Up To 15')
+
+# ── Malformed description bleed-through rows ─────────────────────────────────
+# These are embedded newlines in multi-line descriptions parsed as fake rows.
+# Fix their "names" so the validator passes; category remap will handle rest.
+contrast	White Balance
+deck	Patio
+500 running watts (gasoline); 13	500 Peak Watts

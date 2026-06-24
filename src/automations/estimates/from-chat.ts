@@ -21,6 +21,7 @@ import { randomUUID } from 'crypto';
 import { searchCustomer, createCustomer } from '../../hcp/estimates.js';
 import { matchLineItems } from '../../rag/price-book.js';
 import { buildLineItem, itemKind } from '../../hcp/build-line-item.js';
+import { applyHdAutoPricing } from './hd-auto-price.js';
 import { commitEstimateWorkflow } from '../../agent/workflows/private-hcp-writes/commit-estimate.js';
 import type { CommitLineItem } from '../../agent/workflows/private-hcp-writes/commit-estimate.js';
 
@@ -68,6 +69,9 @@ async function extractServiceItems(scope: string): Promise<Array<{ description: 
     '- A conduit run = 3 items: (1) conduit material (type + size), (2) wire material (gauge × footage), (3) install labor (conduit type + size). List all three with footage as quantity.',
     '- "Install new slim downlight with new switch" = FIRST light on a new circuit (includes switch box + switchleg wire). Additional lights on same circuit = "Install new slim downlight" (no switch). Use quantity for multiples of the add-on.',
     '- SER cable / service entrance wire → list as a material item with footage as quantity.',
+    '- For ALL footage-based items (wire, conduit, cable, trench), quantity = linear footage, not 1.',
+    '- Brand/model names (Square D QO, Eaton BR, Leviton, etc.) are SPECS — never a separate line item. "Eaton BR 200A 40-space" → one item (the panel enclosure), not two.',
+    '- Default panel brand: Eaton BR — use amperage in description, not brand name.',
     '- unitPrice = 0 always (system fills from pricebook). quantity = count or footage.',
   ];
 
@@ -232,6 +236,11 @@ async function run() {
 
     progress('Matching to pricebook...');
     const matched = await matchLineItems(workItems);
+
+    // ── HD auto-pricing pass for unmatched materials ──────────────────────────
+    await applyHdAutoPricing(matched, progress, DRY_RUN);
+    // ─────────────────────────────────────────────────────────────────────────
+
     commitLineItems = matched.map((m, i) => {
       const { item } = buildLineItem(m, i);
       return {

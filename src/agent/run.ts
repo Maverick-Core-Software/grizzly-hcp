@@ -1,13 +1,12 @@
 /**
- * Maverick Agent — stdio entry point for MCC chat.mjs.
+ * Maverick Agent — stdio entry point.
  *
- * stdin:  JSON { prompt, history?, channel? }
- *   - prompt:  string
- *   - history: Array<{ role: 'user' | 'assistant', content: string }>
- *   - channel: 'text' | 'voice' | 'cli' (default: 'text')
+ * stdin:  JSON { prompt, history?, channel?, stream? }
+ *   - stream: true → emit "data: <chunk>" lines + "[DONE] {...}\n" (opt-in)
+ *   - stream: false/omitted → emit single JSON { success, response } (default, unchanged)
  *
- * stdout: JSON { success: true, response: string }
- *         JSON { success: false, error: string }
+ * stdout (non-stream): JSON { success: true, response: string }
+ * stdout (stream):     "data: <chunk>\n" per token, then "[DONE] {...}\n"
  * stderr: [progress] <message> lines
  */
 import 'dotenv/config';
@@ -32,9 +31,10 @@ async function run() {
     prompt: string;
     history?: Array<{ role: 'user' | 'assistant'; content: string }>;
     channel?: Channel;
+    stream?: boolean;
   };
 
-  const { prompt, history = [], channel = 'text' } = payload;
+  const { prompt, history = [], channel = 'text', stream = false } = payload;
 
   if (!prompt?.trim()) {
     process.stdout.write(JSON.stringify({ success: false, error: 'No prompt provided.' }));
@@ -45,44 +45,78 @@ async function run() {
   const turnId = randomUUID();
   const toolsUsed: string[] = [];
 
+  const contextMessages = history
+    .map(m => `${m.role === 'user' ? 'Carter' : 'Maverick'}: ${m.content}`)
+    .join('\n');
+  const fullPrompt = contextMessages ? `${contextMessages}\nCarter: ${prompt}` : prompt;
+
   progress('Maverick thinking...');
 
   try {
-    // Build messages: history + current prompt as plain strings the agent can handle.
-    // Mastra agent.generate accepts a single string for the current turn; prior history
-    // is passed as context. For voice/CLI the history is short so this is fine for Phase 1.
-    const contextMessages = history.map(m => `${m.role === 'user' ? 'Carter' : 'Maverick'}: ${m.content}`).join('\n');
-    const fullPrompt = contextMessages ? `${contextMessages}\nCarter: ${prompt}` : prompt;
+    if (stream) {
+      // ponytail: textStream is ReadableStream<string> (Node 24+ supports for-await natively)
+      // toolResults is Promise<ToolResultChunk[]> — awaited after iteration completes
+      const streamResult = await agent.stream(fullPrompt);
 
-    const result = await agent.generate(fullPrompt);
+      for await (const chunk of streamResult.textStream) {
+        process.stdout.write(`data: ${chunk}\n`);
+      }
 
-    const response = typeof result.text === 'string' ? result.text : JSON.stringify(result);
-
-    // Log any tool uses from the response
-    if (result.toolResults?.length) {
-      const tools = (result.toolResults as unknown as Array<{ toolName: string }>)
-        .map(t => t.toolName)
-        .filter(Boolean);
+      // toolResults is a Promise — await it after the stream closes
+      // Each element is ToolResultChunk: { type: 'tool-result', payload: { toolName, ... } }
+      const toolResults = await streamResult.toolResults;
+      const tools = Array.isArray(toolResults)
+        ? toolResults.map(t => t.payload?.toolName).filter(Boolean)
+        : [];
       toolsUsed.push(...tools);
+
+      logAudit({
+        turnId,
+        userRequest: prompt.slice(0, 120),
+        intent: '',
+        modelUsed: 'reasoning',
+        toolsInvoked: toolsUsed,
+        workflowsTriggered: [],
+        hcpIdsChanged: [],
+        approvedBy: 'carter',
+        result: 'success',
+        sensitiveRefs: [],
+      });
+
       if (tools.length) progress(`Used tools: ${tools.join(', ')}`);
+      process.stdout.write(`\n[DONE] ${JSON.stringify({ success: true, toolsUsed })}\n`);
+      process.exit(0);
+
+    } else {
+      // Non-streaming path — unchanged from original
+      const result = await agent.generate(fullPrompt);
+      const response = typeof result.text === 'string' ? result.text : JSON.stringify(result);
+
+      if (result.toolResults?.length) {
+        // generate() toolResults shape: { id, name, result, error } — not toolName
+        const tools = (result.toolResults as unknown as Array<{ name: string }>)
+          .map(t => t.name).filter(Boolean);
+        toolsUsed.push(...tools);
+        if (tools.length) progress(`Used tools: ${tools.join(', ')}`);
+      }
+
+      logAudit({
+        turnId,
+        userRequest: prompt.slice(0, 120),
+        ...(process.env.AUDIT_LOG_RESPONSES === 'true' ? { maverickResponse: response } : {}),
+        intent: '',
+        modelUsed: 'reasoning',
+        toolsInvoked: toolsUsed,
+        workflowsTriggered: [],
+        hcpIdsChanged: [],
+        approvedBy: 'carter',
+        result: 'success',
+        sensitiveRefs: [],
+      });
+
+      progress('Done.');
+      process.stdout.write(JSON.stringify({ success: true, response }), () => process.exit(0));
     }
-
-    logAudit({
-      turnId,
-      userRequest: prompt.slice(0, 120),
-      ...(process.env.AUDIT_LOG_RESPONSES === 'true' ? { maverickResponse: response } : {}),
-      intent: '',
-      modelUsed: 'reasoning',
-      toolsInvoked: toolsUsed,
-      workflowsTriggered: [],
-      hcpIdsChanged: [],
-      approvedBy: 'carter',
-      result: 'success',
-      sensitiveRefs: [],
-    });
-
-    progress('Done.');
-    process.stdout.write(JSON.stringify({ success: true, response }), () => process.exit(0));
   } catch (e) {
     const error = e instanceof Error ? e.message : String(e);
     logAudit({
@@ -97,10 +131,17 @@ async function run() {
       result: `error: ${error}`,
       sensitiveRefs: [],
     });
-    process.stdout.write(JSON.stringify({ success: false, error }), () => process.exit(1));
+
+    if (stream) {
+      process.stdout.write(`\n[ERROR] ${JSON.stringify({ success: false, error })}\n`);
+    } else {
+      process.stdout.write(JSON.stringify({ success: false, error }));
+    }
+    process.exit(1);
   }
 }
 
 run().catch(err => {
-  process.stdout.write(JSON.stringify({ success: false, error: err.message }), () => process.exit(1));
+  process.stdout.write(JSON.stringify({ success: false, error: err.message }));
+  process.exit(1);
 });
