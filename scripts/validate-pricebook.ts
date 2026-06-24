@@ -72,17 +72,15 @@ function checkItem(uuid: string, category: string, name: string, unit: string): 
     [/\bCkt\b/gi, 'Circuit'],
     [/\bPnl\b/gi, 'Panel'],
     [/\bRcpt\b/gi, 'Receptacle'],
-    [/\bRec\b/gi, 'Receptacle'],
     [/\bSwt\b/gi, 'Switch'],
     [/\bFxtr\b/gi, 'Fixture'],
-    [/\bFix\b/gi, 'Fixture'],
     [/\bSvc\b/gi, 'Service'],
-    [/\bBreak\b/gi, 'Breaker'],
     [/\bBrkr\b/gi, 'Breaker'],
   ] as const;
 
   for (const [pattern, replacement] of ABBR) {
-    if (pattern.test(name)) {
+    const testPattern = new RegExp(pattern.source, 'i'); // no g flag for test; avoids lastIndex bug
+    if (testPattern.test(name)) {
       const suggestion = name.replace(pattern, replacement);
       violations.push({ uuid, category, name, rule: `ABBR:${replacement}`, suggestion });
       break; // report one abbr violation at a time
@@ -110,7 +108,7 @@ function checkItem(uuid: string, category: string, name: string, unit: string): 
 
 async function main() {
   const raw = await fs.readFile(CSV_PATH, 'utf-8');
-  const lines = raw.split('\n').filter(Boolean);
+  const lines = raw.split(/\r?\n/).filter(Boolean);
 
   const allViolations: Violation[] = [];
 
@@ -149,6 +147,7 @@ async function main() {
 
   console.log(`\nTotal violations: ${allViolations.length}`);
   console.log('Run scripts/remap-categories.ts next to fix category assignments.');
+  process.exit(1);
 }
 
 main().catch(e => { console.error(e); process.exit(1); });
