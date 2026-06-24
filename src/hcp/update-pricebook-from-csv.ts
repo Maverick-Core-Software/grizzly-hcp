@@ -36,12 +36,35 @@ function parsePrice(s: string): number {
   return Math.round(parseFloat(s.replace('$', '') || '0') * 100);
 }
 
+function parseCsvRows(text: string): string[][] {
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let field = '';
+  let inQuote = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (inQuote) {
+      if (ch === '"' && text[i + 1] === '"') { field += '"'; i++; }
+      else if (ch === '"') { inQuote = false; }
+      else { field += ch; }
+    } else {
+      if (ch === '"') { inQuote = true; }
+      else if (ch === ',') { row.push(field); field = ''; }
+      else if (ch === '\r') { /* skip */ }
+      else if (ch === '\n') { row.push(field); rows.push(row); row = []; field = ''; }
+      else { field += ch; }
+    }
+  }
+  if (field || row.length) { row.push(field); rows.push(row); }
+  return rows;
+}
+
 async function readCsv(): Promise<CsvRow[]> {
-  const text  = await fs.readFile(CSV_PATH, 'utf-8');
-  const lines = text.split('\n').filter(l => l.trim());
+  const text = await fs.readFile(CSV_PATH, 'utf-8');
+  const allRows = parseCsvRows(text);
   const rows: CsvRow[] = [];
-  for (let i = 1; i < lines.length; i++) {
-    const cols = lines[i].match(/"([^"]*)"/g)?.map(s => s.slice(1, -1)) ?? [];
+  for (let i = 1; i < allRows.length; i++) {
+    const cols = allRows[i];
     if (cols.length < 6) continue;
     rows.push({
       industryUuid:  cols[1] ?? '',
