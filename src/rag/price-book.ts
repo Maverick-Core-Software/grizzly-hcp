@@ -95,7 +95,7 @@ export async function matchLineItems(
 
       if (ragOnline) {
         try {
-          const hits = await searchPriceBook(item.description, 1);
+          const hits = await searchPriceBook(item.description, 3);
           const top = hits[0];
           if (top && top.score >= RAG_SCORE_THRESHOLD) {
             match = {

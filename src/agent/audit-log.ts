@@ -7,6 +7,7 @@ const LOG_PATH = path.join(process.cwd(), 'data', 'audit.jsonl');
 export interface AuditEntry {
   turnId: string;
   userRequest: string;    // short summary, no PII
+  maverickResponse?: string; // full response text (logged while AUDIT_LOG_RESPONSES=true)
   intent: string;
   modelUsed: string;
   toolsInvoked: string[];

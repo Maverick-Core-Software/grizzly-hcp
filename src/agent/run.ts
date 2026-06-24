@@ -70,6 +70,7 @@ async function run() {
     logAudit({
       turnId,
       userRequest: prompt.slice(0, 120),
+      ...(process.env.AUDIT_LOG_RESPONSES === 'true' ? { maverickResponse: response } : {}),
       intent: '',
       modelUsed: 'reasoning',
       toolsInvoked: toolsUsed,

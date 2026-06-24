@@ -38,18 +38,55 @@ async function extractServiceItems(scope: string): Promise<Array<{ description: 
   const Anthropic = (await import('@anthropic-ai/sdk')).default;
   const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
+  // Pull historical estimates + pricebook matches before extraction so Haiku
+  // can use exact item names and see how Grizzly structures similar jobs.
+  const { ragAsk, searchPriceBook } = await import('../../rag/client.js');
+  const [historyResult, pricebookResult] = await Promise.allSettled([
+    ragAsk(`Grizzly Electrical line items and estimates for: ${scope}`, 8),
+    searchPriceBook(scope, 15),
+  ]);
+
+  const historyText = historyResult.status === 'fulfilled'
+    ? (historyResult.value.sources as Array<{ text: string }>)
+        .map(s => s.text).filter(Boolean).slice(0, 5).join('\n---\n')
+    : '';
+
+  const pricebookText = pricebookResult.status === 'fulfilled'
+    ? pricebookResult.value
+        .map(p => `"${p.name}" — $${p.price} (${p.category})`)
+        .join('\n')
+    : '';
+
+  const systemLines = [
+    'You are an electrical estimating dispatcher for Grizzly Electrical Solutions.',
+    'Extract the exact line items needed for this job scope.',
+    '',
+    'RULES:',
+    '- Use EXACT pricebook item names from the list below wherever they match.',
+    '- Match amperage and size exactly — never substitute 400A for 200A, 20A for 15A, etc.',
+    '- Overhead/underground service upgrades are multiple items: main panel PLUS meter base PLUS the service entrance (overhead: riser+weatherhead as one "Overhead Service" item; underground: conduit+wire). List each separately.',
+    '- A conduit run = 3 items: (1) conduit material (type + size), (2) wire material (gauge × footage), (3) install labor (conduit type + size). List all three with footage as quantity.',
+    '- "Install new slim downlight with new switch" = FIRST light on a new circuit (includes switch box + switchleg wire). Additional lights on same circuit = "Install new slim downlight" (no switch). Use quantity for multiples of the add-on.',
+    '- SER cable / service entrance wire → list as a material item with footage as quantity.',
+    '- unitPrice = 0 always (system fills from pricebook). quantity = count or footage.',
+  ];
+
+  if (pricebookText) {
+    systemLines.push('', 'AVAILABLE PRICEBOOK ITEMS (use these exact names):');
+    systemLines.push(pricebookText);
+  }
+
+  if (historyText) {
+    systemLines.push('', 'SIMILAR PAST GRIZZLY ESTIMATES (follow these patterns):');
+    systemLines.push(historyText);
+  }
+
+  systemLines.push('', 'Return JSON only — no prose: [{"description":"exact item name","quantity":1,"unitPrice":0}]');
+
   const msg = await client.messages.create({
     model: 'claude-haiku-4-5-20251001',
-    max_tokens: 600,
-    system: [
-      'You are an electrical service dispatcher. Extract distinct electrical work items from this job scope.',
-      'Write each as a SHORT service name (2-6 words) using the same naming style as an electrician\'s price book.',
-      'Examples: "replace GFCI" → "Replace GFCI Receptacle", "200A panel upgrade" → "200A Panel Upgrade",',
-      '"5 AFCI breakers" → {"description":"AFCI Breaker Replacement","quantity":5,"unitPrice":0},',
-      '"3 bathroom GFCI outlets" → {"description":"Install GFCI Receptacle","quantity":3,"unitPrice":0}',
-      'Return JSON only — no prose: [{"description":"short name","quantity":1,"unitPrice":0}]',
-      'One item per distinct task type. Use quantity field for multiples of the same item.',
-    ].join('\n'),
+    max_tokens: 800,
+    system: systemLines.join('\n'),
     messages: [{ role: 'user', content: scope.slice(0, 3000) }],
   });
 

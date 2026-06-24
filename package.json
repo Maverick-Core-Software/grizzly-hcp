@@ -21,6 +21,7 @@
     "takeoff": "tsx src/takeoff/cli.ts",
     "takeoff:validate": "tsx src/takeoff/cli.ts --validate-mode",
     "voice-server": "tsx src/agent/voice-server.ts",
+    "imessage": "tsx src/automations/imessage/index.ts",
     "run": "tsx src/automations/jobs/list-jobs.ts"
   },
   "dependencies": {
@@ -38,6 +39,7 @@
     "playwright": "^1.49.0",
     "qrcode-terminal": "^0.12.0",
     "sharp": "^0.33.5",
+    "spectrum-ts": "^6.1.1",
     "uuid": "^14.0.0",
     "zod": "^3.23.8"
   },
