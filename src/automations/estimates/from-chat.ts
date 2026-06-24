@@ -36,10 +36,7 @@ async function readStdin(): Promise<string> {
 }
 
 async function extractServiceItems(scope: string): Promise<Array<{ description: string; quantity: number; unitPrice: number }>> {
-  const Anthropic = (await import('@anthropic-ai/sdk')).default;
-  const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-
-  // Pull historical estimates + pricebook matches before extraction so Haiku
+  // Pull historical estimates + pricebook matches before extraction so GLM
   // can use exact item names and see how Grizzly structures similar jobs.
   const { ragAsk, searchPriceBook } = await import('../../rag/client.js');
   const [historyResult, pricebookResult] = await Promise.allSettled([
@@ -87,14 +84,24 @@ async function extractServiceItems(scope: string): Promise<Array<{ description: 
 
   systemLines.push('', 'Return JSON only — no prose: [{"description":"exact item name","quantity":1,"unitPrice":0}]');
 
-  const msg = await client.messages.create({
-    model: 'claude-haiku-4-5-20251001',
-    max_tokens: 800,
-    system: systemLines.join('\n'),
-    messages: [{ role: 'user', content: scope.slice(0, 3000) }],
+  const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY!}`,
+    },
+    body: JSON.stringify({
+      model: 'z-ai/glm-5.2',
+      max_tokens: 800,
+      messages: [
+        { role: 'system', content: systemLines.join('\n') },
+        { role: 'user', content: scope.slice(0, 3000) },
+      ],
+    }),
   });
-
-  const text = (msg.content[0].type === 'text' ? msg.content[0].text : '').trim();
+  if (!res.ok) throw new Error(`GLM extract → ${res.status}`);
+  const data = await res.json();
+  const text = (data.choices?.[0]?.message?.content || '').trim();
   const stripped = text.replace(/```(?:json)?\n?/g, '').replace(/```/g, '');
   const m = stripped.match(/\[[\s\S]*\]/);
   if (!m) throw new Error(`no JSON array in response: ${text.slice(0, 200)}`);
