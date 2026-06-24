@@ -60,13 +60,19 @@ async function extractCustomerFromBody(body: string): Promise<{ name: string; em
 }
 
 /**
- * Extract distinct billable work items from a job scope (or email body) as SHORT service names.
- * Produces 2-5 word names that match pricebook naming conventions for better semantic search.
- * The RAG-generated scope is far richer than a raw email body (often a 10+ item breakdown),
- * so token/char limits match from-chat.ts to avoid truncating it.
+ * Extract distinct billable work items from a job scope (or email body).
+ * Uses the full pricebook catalog so GLM can pick exact names — fast exact-name
+ * lookup in matchLineItems() short-circuits RAG for any direct hit.
  */
 async function extractServiceItems(text: string): Promise<Array<{ description: string; quantity: number; unitPrice: number }>> {
   try {
+    const { loadPriceBook } = await import('../../rag/price-book.js');
+    const catalog = await loadPriceBook();
+    const catalogText = catalog
+      .filter(i => i.uuid.startsWith('olit_'))
+      .map(i => `${i.name} (${i.category})`)
+      .join('\n');
+
     const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
       method: 'POST',
       headers: {
@@ -75,22 +81,20 @@ async function extractServiceItems(text: string): Promise<Array<{ description: s
       },
       body: JSON.stringify({
         model: 'z-ai/glm-5-turbo',
-        max_tokens: 400,
+        max_tokens: 600,
         messages: [
           {
             role: 'system',
             content: [
-              'You are an electrical service dispatcher. Extract distinct electrical work items from this job scope or customer email.',
-              'Write each as a SHORT service name (2-6 words) using the same naming style as an electrician\'s price book.',
-              'Examples of good short service names:',
-              '  "my GFCI stopped working" → "Replace GFCI Receptacle"',
-              '  "add a switch and ceiling light where there is none" → "Add New Switch and Fixture"',
-              '  "EV charger install in garage next to panel" → "EV Car Charger Install Next to Panel"',
-              '  "panel upgrade to 200 amps" → "200A Panel Upgrade"',
-              '  "ceiling fan install" → "Ceiling Fan Installation"',
-              '  "outlet not working" → "Troubleshoot Level 1"',
-              'Return JSON only — no prose: [{"description":"short name","quantity":1,"unitPrice":0}]',
-              'One item per distinct task. If work involves both labor steps that are part of the same service, keep it as ONE item.',
+              'You are an electrical service dispatcher for Grizzly Electrical Solutions.',
+              'Extract distinct billable work items from this job scope or email.',
+              'Use EXACT names from the PRICEBOOK below when they match the described work.',
+              'If nothing matches exactly, use a short 2-6 word service name in the same style.',
+              'unitPrice = 0 always. quantity = count or footage.',
+              'Return JSON only — no prose: [{"description":"exact pricebook name or short name","quantity":1,"unitPrice":0}]',
+              '',
+              'PRICEBOOK:',
+              catalogText,
             ].join('\n'),
           },
           { role: 'user', content: text.slice(0, 3000) },

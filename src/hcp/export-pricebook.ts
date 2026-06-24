@@ -75,6 +75,10 @@ function escape(s: string): string {
   return `"${String(s).replace(/"/g, '""')}"`;
 }
 
+function cleanDesc(s: string): string {
+  return s.replace(/[\r\n]+/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
 function toCsvRow(service: HcpService, categoryName: string, industryUuid: string): string {
   return [
     'Electrical',
@@ -82,7 +86,7 @@ function toCsvRow(service: HcpService, categoryName: string, industryUuid: strin
     categoryName,
     service.uuid,
     service.name,
-    service.description,
+    cleanDesc(service.description),
     centsToStr(service.price),
     centsToStr(service.cost),
     String(service.taxable),
@@ -169,7 +173,7 @@ async function run() {
         mat.material_category_name || mcat.name,
         mat.uuid,
         mat.name,
-        mat.description,
+        cleanDesc(mat.description),
         centsToStr(mat.price),
         centsToStr(mat.cost),
         String(mat.taxable),

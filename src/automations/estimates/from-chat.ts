@@ -36,31 +36,32 @@ async function readStdin(): Promise<string> {
 }
 
 async function extractServiceItems(scope: string): Promise<Array<{ description: string; quantity: number; unitPrice: number }>> {
-  // Pull historical estimates + pricebook matches before extraction so GLM
-  // can use exact item names and see how Grizzly structures similar jobs.
-  const { ragAsk, searchPriceBook } = await import('../../rag/client.js');
-  const [historyResult, pricebookResult] = await Promise.allSettled([
-    ragAsk(`Grizzly Electrical line items and estimates for: ${scope}`, 8),
-    searchPriceBook(scope, 15),
+  const { ragAsk } = await import('../../rag/client.js');
+  const { loadPriceBook } = await import('../../rag/price-book.js');
+
+  // Fetch history and full catalog in parallel
+  const [historyResult, catalog] = await Promise.all([
+    ragAsk(`Grizzly Electrical line items and estimates for: ${scope}`, 8).catch(() => null),
+    loadPriceBook(),
   ]);
 
-  const historyText = historyResult.status === 'fulfilled'
-    ? (historyResult.value.sources as Array<{ text: string }>)
+  const historyText = historyResult
+    ? (historyResult.sources as Array<{ text: string }>)
         .map(s => s.text).filter(Boolean).slice(0, 5).join('\n---\n')
     : '';
 
-  const pricebookText = pricebookResult.status === 'fulfilled'
-    ? pricebookResult.value
-        .map(p => `"${p.name}" — $${p.price} (${p.category})`)
-        .join('\n')
-    : '';
+  // Full service catalog — GLM picks exact names, matcher does a fast exact-name lookup
+  const catalogText = catalog
+    .filter(i => i.uuid.startsWith('olit_'))
+    .map(i => `${i.name} (${i.category})`)
+    .join('\n');
 
   const systemLines = [
     'You are an electrical estimating dispatcher for Grizzly Electrical Solutions.',
     'Extract the exact line items needed for this job scope.',
     '',
     'RULES:',
-    '- Use EXACT pricebook item names from the list below wherever they match.',
+    '- Use EXACT item names from the PRICEBOOK below wherever they match.',
     '- Match amperage and size exactly — never substitute 400A for 200A, 20A for 15A, etc.',
     '- Overhead/underground service upgrades are multiple items: main panel PLUS meter base PLUS the service entrance (overhead: riser+weatherhead as one "Overhead Service" item; underground: conduit+wire). List each separately.',
     '- A conduit run = 3 items: (1) conduit material (type + size), (2) wire material (gauge × footage), (3) install labor (conduit type + size). List all three with footage as quantity.',
@@ -70,19 +71,17 @@ async function extractServiceItems(scope: string): Promise<Array<{ description: 
     '- Brand/model names (Square D QO, Eaton BR, Leviton, etc.) are SPECS — never a separate line item. "Eaton BR 200A 40-space" → one item (the panel enclosure), not two.',
     '- Default panel brand: Eaton BR — use amperage in description, not brand name.',
     '- unitPrice = 0 always (system fills from pricebook). quantity = count or footage.',
+    '',
+    'PRICEBOOK (use these EXACT names):',
+    catalogText,
   ];
-
-  if (pricebookText) {
-    systemLines.push('', 'AVAILABLE PRICEBOOK ITEMS (use these exact names):');
-    systemLines.push(pricebookText);
-  }
 
   if (historyText) {
     systemLines.push('', 'SIMILAR PAST GRIZZLY ESTIMATES (follow these patterns):');
     systemLines.push(historyText);
   }
 
-  systemLines.push('', 'Return JSON only — no prose: [{"description":"exact item name","quantity":1,"unitPrice":0}]');
+  systemLines.push('', 'Return JSON only — no prose: [{"description":"exact item name from pricebook","quantity":1,"unitPrice":0}]');
 
   const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
     method: 'POST',

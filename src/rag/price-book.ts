@@ -78,22 +78,72 @@ export async function findBestMatch(description: string, threshold = 0.6): Promi
   return best;
 }
 
-const RAG_SCORE_THRESHOLD = 0.60; // cosine similarity — junk vectors removed, lowered to catch near-miss short names
+const RAG_SCORE_THRESHOLD = 0.60;
 
 /**
- * Match all line items at once. Tries RAG semantic search first (when online),
- * falls back to local CSV fuzzy match for any item that scores below threshold.
+ * Claude Haiku fallback: match a description against the full catalog when RAG misses.
+ * Sends the full service list as in-context reference. Returns null if nothing fits.
+ */
+async function claudeMatch(description: string, catalog: PriceBookItem[]): Promise<MatchResult | null> {
+  try {
+    const { default: Anthropic } = await import('@anthropic-ai/sdk');
+    const client = new Anthropic();
+
+    const services = catalog.filter(i => i.uuid.startsWith('olit_'));
+    const list = services.map(i => `${i.name} (${i.category})`).join('\n');
+
+    const msg = await client.messages.create({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 80,
+      system: [
+        'Match the given electrical service description to the best item from this pricebook.',
+        'Return ONLY the exact item name from the list, or the word null if nothing fits.',
+        'No explanation, no punctuation, no quotes — just the name or null.',
+        '',
+        'PRICEBOOK:',
+        list,
+      ].join('\n'),
+      messages: [{ role: 'user', content: `Match: "${description}"` }],
+    });
+
+    const returned = ((msg.content[0] as { text: string }).text ?? '').trim();
+    if (!returned || returned === 'null') return null;
+
+    const item = services.find(i => normalize(i.name) === normalize(returned));
+    if (!item) return null;
+
+    return { item, score: 0.85, exact: false };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Match all line items at once.
+ * 1. Exact name lookup (free, instant)
+ * 2. RAG semantic search (when online)
+ * 3. Claude Haiku fallback (replaces word-overlap)
+ * 4. null → flagged for manual pricing
  */
 export async function matchLineItems(
   items: Array<{ description: string; quantity: number; unitPrice: number }>
 ): Promise<Array<{ description: string; quantity: number; unitPrice: number; match: MatchResult | null }>> {
-  const ragOnline = await checkHealth();
+  const [ragOnline, catalog] = await Promise.all([checkHealth(), loadPriceBook()]);
 
   return Promise.all(
     items.map(async item => {
       let match: MatchResult | null = null;
 
-      if (ragOnline) {
+      // Step 1: exact name match — no API call needed
+      const exact = catalog.find(
+        i => i.uuid.startsWith('olit_') && normalize(i.name) === normalize(item.description)
+      );
+      if (exact) {
+        match = { item: exact, score: 1.0, exact: true };
+      }
+
+      // Step 2: RAG semantic search
+      if (!match && ragOnline) {
         try {
           const hits = await searchPriceBook(item.description, 3);
           const top = hits[0];
@@ -112,13 +162,12 @@ export async function matchLineItems(
               exact: false,
             };
           }
-        } catch {
-          // RAG offline or this item failed — fall through to local
-        }
+        } catch { /* RAG offline — fall through */ }
       }
 
+      // Step 3: Claude Haiku fallback
       if (!match) {
-        match = await findBestMatch(item.description);
+        match = await claudeMatch(item.description, catalog);
       }
 
       return { ...item, match };
