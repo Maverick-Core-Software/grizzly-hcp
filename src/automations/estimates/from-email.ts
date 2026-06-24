@@ -8,6 +8,7 @@
  */
 import 'dotenv/config';
 import { randomUUID } from 'crypto';
+import { appendFileSync } from 'fs';
 import { pathToFileURL } from 'node:url';
 import { searchCustomer, createCustomer } from '../../hcp/estimates.js';
 import { matchLineItems } from '../../rag/price-book.js';
@@ -221,6 +222,19 @@ async function run() {
   if (result.unmatched.length) {
     console.error(`[from-email] ${result.unmatched.length} item(s) need manual pricing: ${result.unmatched.join(', ')}`);
   }
+
+  // Training log: scope + matched/unmatched items for the self-improvement loop
+  try {
+    const trainingEntry = {
+      estimateUuid: result.estimateUuid,
+      scope: pickExtractionSource(scope, body),
+      customerName,
+      lineItemsMatched: commitLineItems.filter(li => li.serviceItemId).map(li => li.name),
+      lineItemsUnmatched: result.unmatched,
+      createdAt: new Date().toISOString(),
+    };
+    appendFileSync('data/estimate-training.jsonl', JSON.stringify(trainingEntry) + '\n', 'utf-8');
+  } catch { /* non-fatal */ }
 
   process.stdout.write(JSON.stringify({ success: true, estimateUrl: result.estimateUrl, estimateUuid: result.estimateUuid, unmatched: result.unmatched }));
 }

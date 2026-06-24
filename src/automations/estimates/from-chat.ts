@@ -18,6 +18,7 @@
  */
 import 'dotenv/config';
 import { randomUUID } from 'crypto';
+import { appendFileSync } from 'fs';
 import { searchCustomer, createCustomer } from '../../hcp/estimates.js';
 import { matchLineItems } from '../../rag/price-book.js';
 import { buildLineItem, itemKind } from '../../hcp/build-line-item.js';
@@ -327,6 +328,19 @@ async function run() {
     ? `Assigned ${techIds.length} tech(s)`
     : 'No techs assigned';
   progress(`${techLabel}. Done! ${result.estimateUrl}`);
+
+  // Training log: scope + matched/unmatched items for the self-improvement loop
+  try {
+    const trainingEntry = {
+      estimateUuid: result.estimateUuid,
+      scope: scope ?? `(${lineItems?.length ?? 0} pre-structured items)`,
+      customerName: customerName ?? 'unknown',
+      lineItemsMatched: commitLineItems.filter(li => li.serviceItemId).map(li => li.name),
+      lineItemsUnmatched: result.unmatched,
+      createdAt: new Date().toISOString(),
+    };
+    appendFileSync('data/estimate-training.jsonl', JSON.stringify(trainingEntry) + '\n', 'utf-8');
+  } catch { /* non-fatal */ }
 
   process.stdout.write(JSON.stringify({
     success: true,
