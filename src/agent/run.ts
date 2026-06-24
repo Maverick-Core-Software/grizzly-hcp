@@ -58,9 +58,16 @@ async function run() {
       // toolResults is Promise<ToolResultChunk[]> — awaited after iteration completes
       const streamResult = await agent.stream(fullPrompt);
 
+      const streamTimeout = setTimeout(() => {
+        process.stdout.write('\n[ERROR] ' + JSON.stringify({ success: false, error: 'Stream timeout after 120s' }) + '\n');
+        process.exit(1);
+      }, 120_000);
+
       for await (const chunk of streamResult.textStream) {
         process.stdout.write(`data: ${chunk}\n`);
       }
+
+      clearTimeout(streamTimeout);
 
       // toolResults is a Promise — await it after the stream closes
       // Each element is ToolResultChunk: { type: 'tool-result', payload: { toolName, ... } }
