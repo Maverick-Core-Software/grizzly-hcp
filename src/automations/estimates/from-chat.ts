@@ -35,46 +35,34 @@ async function readStdin(): Promise<string> {
 }
 
 async function extractServiceItems(scope: string): Promise<Array<{ description: string; quantity: number; unitPrice: number }>> {
-  const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY!}`,
-    },
-    body: JSON.stringify({
-      model: 'z-ai/glm-5-turbo',
-      max_tokens: 400,
-      messages: [
-        {
-          role: 'system',
-          content: [
-            'You are an electrical service dispatcher. Extract distinct electrical work items from this job scope.',
-            'Write each as a SHORT service name (2-6 words) using the same naming style as an electrician\'s price book.',
-            'Examples of good short service names:',
-            '  "replace GFCI" → "Replace GFCI Receptacle"',
-            '  "add switch and ceiling light" → "Add New Switch and Fixture"',
-            '  "EV charger install next to panel" → "EV Car Charger Install Next to Panel"',
-            '  "200A panel upgrade" → "200A Panel Upgrade"',
-            '  "ceiling fan install" → "Ceiling Fan Installation"',
-            '  "outlet not working" → "Troubleshoot Level 1"',
-            'Return JSON only — no prose: [{"description":"short name","quantity":1,"unitPrice":0}]',
-            'One item per distinct task. Combine related steps of the same service into ONE item.',
-          ].join('\n'),
-        },
-        { role: 'user', content: scope.slice(0, 3000) },
-      ],
-    }),
+  const Anthropic = (await import('@anthropic-ai/sdk')).default;
+  const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+
+  const msg = await client.messages.create({
+    model: 'claude-haiku-4-5-20251001',
+    max_tokens: 600,
+    system: [
+      'You are an electrical service dispatcher. Extract distinct electrical work items from this job scope.',
+      'Write each as a SHORT service name (2-6 words) using the same naming style as an electrician\'s price book.',
+      'Examples: "replace GFCI" → "Replace GFCI Receptacle", "200A panel upgrade" → "200A Panel Upgrade",',
+      '"5 AFCI breakers" → {"description":"AFCI Breaker Replacement","quantity":5,"unitPrice":0},',
+      '"3 bathroom GFCI outlets" → {"description":"Install GFCI Receptacle","quantity":3,"unitPrice":0}',
+      'Return JSON only — no prose: [{"description":"short name","quantity":1,"unitPrice":0}]',
+      'One item per distinct task type. Use quantity field for multiples of the same item.',
+    ].join('\n'),
+    messages: [{ role: 'user', content: scope.slice(0, 3000) }],
   });
 
-  if (!res.ok) throw new Error(`GLM extract → ${res.status}`);
-  const data = await res.json();
-  const text = (data.choices?.[0]?.message?.content || '').trim();
-  const m = text.match(/\[[\s\S]*\]/);
-  if (!m) throw new Error('no JSON array in response');
+  const text = (msg.content[0].type === 'text' ? msg.content[0].text : '').trim();
+  const stripped = text.replace(/```(?:json)?\n?/g, '').replace(/```/g, '');
+  const m = stripped.match(/\[[\s\S]*\]/);
+  if (!m) throw new Error(`no JSON array in response: ${text.slice(0, 200)}`);
   const items = JSON.parse(m[0]) as Array<{ description: string; quantity: number; unitPrice: number }>;
   if (Array.isArray(items) && items.length > 0) return items;
   throw new Error('empty result');
 }
+
+const DRY_RUN = process.argv.includes('--dry-run');
 
 async function run() {
   const payload = JSON.parse(await readStdin()) as {
@@ -111,12 +99,15 @@ async function run() {
     ? incomingTechIds
     : [process.env.CARTER_TECH_ID, process.env.JAIME_TECH_ID].filter(Boolean) as string[];
 
-  // ── Find or create customer ───────────────────────────────────────────────
+  // ── Find or create customer (skipped in dry-run) ─────────────────────────
 
   let customerId: string;
   let addressId: string;
 
-  if (customerName) {
+  if (DRY_RUN) {
+    customerId = 'dry-run';
+    addressId  = 'dry-run';
+  } else if (customerName) {
     progress(`Searching for customer: ${customerName}...`);
     let found = await searchCustomer(customerName);
 
@@ -222,6 +213,30 @@ async function run() {
   const unmatchedCount = commitLineItems.filter(li => !li.serviceItemId).length;
   if (unmatchedCount) {
     progress(`${unmatchedCount} item(s) will need manual pricing in HCP`);
+  }
+
+  // ── Dry run: print confirmation card and stop ─────────────────────────────
+
+  if (DRY_RUN) {
+    const total = commitLineItems.reduce((sum, li) => sum + li.unitPrice * li.quantity, 0);
+    const card = {
+      dryRun: true,
+      customer: customerName ?? '(unknown — would create placeholder)',
+      lineItems: commitLineItems.map(li => ({
+        name: li.name,
+        quantity: li.quantity,
+        unitPrice: li.unitPrice,
+        total: +(li.unitPrice * li.quantity).toFixed(2),
+        kind: li.kind,
+        matched: !!li.serviceItemId,
+        flagged: !li.serviceItemId,
+      })),
+      estimateTotal: +total.toFixed(2),
+      deposit: total > 5000 ? +(total * 0.5).toFixed(2) : null,
+      unmatched: commitLineItems.filter(li => !li.serviceItemId).map(li => li.name),
+    };
+    process.stdout.write(JSON.stringify(card, null, 2));
+    return;
   }
 
   // ── Commit via workflow (idempotent, audited) ─────────────────────────────

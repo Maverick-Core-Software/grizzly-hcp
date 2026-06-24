@@ -19,5 +19,19 @@ module.exports = {
       restart_delay: 5000,
       windowsHide: true,
     },
+    {
+      // Weekly job: pull all HCP estimates with full line items → re-index in RAG.
+      // Runs every Sunday at 2 AM so fresh data is ready for Monday.
+      // Complements the Gemini CSV auto-download pipeline (jobs/customers/pricebook).
+      // One-shot: autorestart: false so PM2 doesn't loop it; cron_restart fires it weekly.
+      name: 'sync-estimates-weekly',
+      script: 'node_modules/tsx/dist/cli.mjs',
+      args: 'src/hcp/sync-estimates.ts',
+      cwd: __dirname,
+      cron_restart: '0 2 * * 0',
+      autorestart: false,
+      watch: false,
+      windowsHide: true,
+    },
   ],
 };
