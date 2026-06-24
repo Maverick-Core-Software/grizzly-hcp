@@ -17,8 +17,8 @@ import { hcpGet, hcpPatch, hcpPostForm } from './client.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CSV_PATH  = path.resolve(__dirname, '../../data/pricebook.csv');
-const DRY_RUN   = !process.argv.includes('--execute');
-const PROBE     = process.argv.includes('--probe');
+const PROBE   = process.argv.includes('--probe');
+const DRY_RUN = !process.argv.includes('--execute') && !PROBE;
 
 // ─── CSV parsing ──────────────────────────────────────────────────────────────
 
@@ -58,13 +58,20 @@ async function readCsv(): Promise<CsvRow[]> {
 
 // ─── HCP category fetching ────────────────────────────────────────────────────
 
-async function fetchServiceCategories(electricalUuid: string): Promise<Map<string, string>> {
-  const res = await hcpGet<{ data?: Array<{ uuid: string; name: string }> }>(
-    `/alpha/pricebook/categories?pricebook_industry_uuid=${electricalUuid}&page=1&page_size=100&sort_column=order_index&sort_direction=asc`
+/** Returns { pricebookUuid, catMap } — pricebookUuid is the `uuid` field (not industry_uuid). */
+async function fetchServiceCategories(): Promise<{ pricebookUuid: string; catMap: Map<string, string> }> {
+  const industries = await hcpGet<{ data?: Array<{ uuid: string; name: string }> }>(
+    '/alpha/pricebook/industries'
   );
-  const map = new Map<string, string>();
-  for (const c of res.data ?? []) map.set(c.name.trim(), c.uuid);
-  return map;
+  const electrical = (industries.data ?? []).find(i => i.name.toLowerCase().includes('electrical'));
+  if (!electrical) throw new Error('Electrical industry not found in HCP');
+
+  const res = await hcpGet<{ data?: Array<{ uuid: string; name: string }> }>(
+    `/alpha/pricebook/categories?pricebook_industry_uuid=${electrical.uuid}&page=1&page_size=100&sort_column=order_index&sort_direction=asc`
+  );
+  const catMap = new Map<string, string>();
+  for (const c of res.data ?? []) catMap.set(c.name.trim(), c.uuid);
+  return { pricebookUuid: electrical.uuid, catMap };
 }
 
 async function fetchMaterialCategories(): Promise<Map<string, string>> {
@@ -108,14 +115,14 @@ async function fetchLiveMaterials(catUuid: string): Promise<Map<string, { name: 
 
 // ─── Category creation ────────────────────────────────────────────────────────
 
-async function ensureServiceCategory(name: string, electricalUuid: string, catMap: Map<string, string>): Promise<string | null> {
+async function ensureServiceCategory(name: string, catMap: Map<string, string>, pricebookUuid: string): Promise<string | null> {
   if (catMap.has(name)) return catMap.get(name)!;
   console.log(`  [NEW CAT] Creating service category: "${name}"`);
   if (DRY_RUN) { console.log('    → dry-run: skipped'); return null; }
   try {
     const res = await hcpPostForm<{ uuid: string; name: string }>(
       '/alpha/pricebook/categories',
-      { name, pricebook_industry_uuid: electricalUuid }
+      { name, pricebook_industry_uuid: pricebookUuid }
     );
     catMap.set(name, res.uuid);
     return res.uuid;
@@ -145,137 +152,129 @@ async function ensureMaterialCategory(name: string, catMap: Map<string, string>)
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 async function run() {
-  console.log(`\nPricebook HCP Sync — ${DRY_RUN ? 'DRY RUN (pass --execute to apply)' : 'EXECUTE MODE'}\n`);
+  const mode = PROBE ? 'PROBE (one item)' : DRY_RUN ? 'DRY RUN (pass --execute to apply)' : 'EXECUTE MODE';
+  console.log(`\nPricebook HCP Sync — ${mode}\n`);
 
   const rows = await readCsv();
   const serviceRows  = rows.filter(r => r.uuid.startsWith('olit_'));
   const materialRows = rows.filter(r => r.uuid.startsWith('pbmat_'));
   console.log(`CSV: ${serviceRows.length} services, ${materialRows.length} materials`);
 
-  // Get electrical industry UUID from CSV (already stored there)
-  const electricalUuid = rows.find(r => r.industryUuid)?.industryUuid ?? '';
-  if (!electricalUuid) throw new Error('No industryUuid in CSV');
+  // ── Fetch all existing HCP categories ──────────────────────────────────────
+  console.log('\nFetching HCP categories...');
+  const { pricebookUuid: electricalUuid, catMap: existingSvcCatMap } = await fetchServiceCategories();
+  const existingMatCatMap = await fetchMaterialCategories();
+  const svcCatUuidToName = new Map([...existingSvcCatMap].map(([n, u]) => [u, n]));
+  const matCatUuidToName = new Map([...existingMatCatMap].map(([n, u]) => [u, n]));
+  console.log(`  ${existingSvcCatMap.size} service categories, ${existingMatCatMap.size} material categories`);
 
-  // ── Service categories ──────────────────────────────────────────────────────
-  console.log('\nFetching HCP service categories...');
-  const svcCatMap = await fetchServiceCategories(electricalUuid);
-  console.log(`  ${svcCatMap.size} categories in HCP`);
+  // ── Fetch ALL live items (from all existing categories) ───────────────────
+  console.log('\nFetching all live items from HCP...');
+  const liveServices  = new Map<string, { name: string; categoryUuid: string }>();
+  const liveMaterials = new Map<string, { name: string; categoryUuid: string }>();
 
-  // Ensure all CSV service categories exist in HCP
-  const csvSvcCats = [...new Set(serviceRows.map(r => r.category))];
-  for (const cat of csvSvcCats) {
-    await ensureServiceCategory(cat, electricalUuid, svcCatMap);
+  for (const [, uuid] of existingSvcCatMap) {
+    for (const [k, v] of await fetchLiveServices(electricalUuid, uuid)) liveServices.set(k, v);
+  }
+  for (const [, uuid] of existingMatCatMap) {
+    for (const [k, v] of await fetchLiveMaterials(uuid)) liveMaterials.set(k, v);
+  }
+  console.log(`  ${liveServices.size} services, ${liveMaterials.size} materials`);
+
+  // ── DRY RUN: show diff by name/category-name comparison, no mutations ─────
+  if (DRY_RUN) {
+    // Figure out which categories are new
+    const newSvcCats = [...new Set(serviceRows.map(r => r.category))].filter(c => !existingSvcCatMap.has(c));
+    const newMatCats = [...new Set(materialRows.map(r => r.category))].filter(c => !existingMatCatMap.has(c));
+    if (newSvcCats.length) console.log(`\n  Categories to CREATE in HCP (${newSvcCats.length}):\n  ${newSvcCats.join('\n  ')}`);
+    if (newMatCats.length) console.log(`\n  Material categories to CREATE (${newMatCats.length}):\n  ${newMatCats.join('\n  ')}`);
+
+    // Show item-level diff
+    let nameChanges = 0, catChanges = 0, notFound = 0;
+    for (const row of [...serviceRows, ...materialRows]) {
+      const isService = row.uuid.startsWith('olit_');
+      const live      = isService ? liveServices.get(row.uuid) : liveMaterials.get(row.uuid);
+      if (!live) { notFound++; continue; }
+      const liveCatName = isService ? svcCatUuidToName.get(live.categoryUuid) : matCatUuidToName.get(live.categoryUuid);
+      const nChanged = live.name !== row.name;
+      const cChanged = liveCatName !== row.category;
+      if (nChanged || cChanged) {
+        const tag = isService ? '[SVC]' : '[MAT]';
+        console.log(`  ${tag} "${live.name}"`);
+        if (nChanged) { console.log(`       name → "${row.name}"`); nameChanges++; }
+        if (cChanged) { console.log(`       cat  "${liveCatName ?? '?'}" → "${row.category}"`); catChanges++; }
+      }
+    }
+    console.log(`\n── Summary: ${nameChanges} name changes, ${catChanges} category moves, ${notFound} not in HCP ──`);
+    if (newSvcCats.length || newMatCats.length) console.log(`  ${newSvcCats.length + newMatCats.length} new categories will be created first`);
+    console.log('\nRun with --probe to test one item, or --execute to apply all.');
+    return;
   }
 
-  // ── Material categories ─────────────────────────────────────────────────────
-  console.log('\nFetching HCP material categories...');
-  const matCatMap = await fetchMaterialCategories();
-  console.log(`  ${matCatMap.size} material categories in HCP`);
+  // ── PROBE / EXECUTE: create categories first, then compute diff by UUID ───
 
-  const csvMatCats = [...new Set(materialRows.map(r => r.category))];
-  for (const cat of csvMatCats) {
+  // Ensure all CSV categories exist in HCP (creates missing ones)
+  const svcCatMap = new Map(existingSvcCatMap);
+  const matCatMap = new Map(existingMatCatMap);
+  for (const cat of new Set(serviceRows.map(r => r.category))) {
+    await ensureServiceCategory(cat, svcCatMap, electricalUuid);
+  }
+  for (const cat of new Set(materialRows.map(r => r.category))) {
     await ensureMaterialCategory(cat, matCatMap);
   }
 
-  // ── Fetch all live items ────────────────────────────────────────────────────
-  console.log('\nFetching all live service items from HCP...');
-  const liveServices = new Map<string, { name: string; categoryUuid: string }>();
-  for (const [, uuid] of svcCatMap) {
-    const items = await fetchLiveServices(electricalUuid, uuid);
-    for (const [k, v] of items) liveServices.set(k, v);
-  }
-  console.log(`  ${liveServices.size} live services`);
+  // Also fetch from any newly created categories (they'll be empty but need to be in svcCatMap)
+  // Items are still in old categories — liveServices already has them all from the initial fetch above.
 
-  console.log('\nFetching all live material items from HCP...');
-  const liveMaterials = new Map<string, { name: string; categoryUuid: string }>();
-  for (const [, uuid] of matCatMap) {
-    const items = await fetchLiveMaterials(uuid);
-    for (const [k, v] of items) liveMaterials.set(k, v);
-  }
-  console.log(`  ${liveMaterials.size} live materials`);
-
-  // ── Compute diff ────────────────────────────────────────────────────────────
-  const svcChanges: Array<{ uuid: string; name: string; categoryUuid: string; oldName?: string; oldCat?: string }> = [];
-  const matChanges: Array<{ uuid: string; name: string; categoryUuid: string; oldName?: string; oldCat?: string }> = [];
+  // ── Compute diff by UUID ───────────────────────────────────────────────────
+  const svcChanges: Array<{ uuid: string; name: string; categoryUuid: string; oldName: string; oldCatName: string }> = [];
+  const matChanges: Array<{ uuid: string; name: string; categoryUuid: string; oldName: string; oldCatName: string }> = [];
 
   for (const row of serviceRows) {
-    const live = liveServices.get(row.uuid);
+    const live          = liveServices.get(row.uuid);
     const targetCatUuid = svcCatMap.get(row.category);
-    if (!targetCatUuid) {
-      console.warn(`  ⚠ No category UUID for "${row.category}" — skipping ${row.uuid}`);
-      continue;
-    }
-    const nameChanged = live && live.name !== row.name;
-    const catChanged  = live && live.categoryUuid !== targetCatUuid;
-    if (!live || nameChanged || catChanged) {
-      svcChanges.push({ uuid: row.uuid, name: row.name, categoryUuid: targetCatUuid, oldName: live?.name, oldCat: live?.categoryUuid });
+    if (!targetCatUuid) { console.warn(`  ⚠ No UUID for service category "${row.category}" — skipping`); continue; }
+    if (!live) { console.warn(`  ⚠ ${row.uuid} not found in live HCP — skipping`); continue; }
+    if (live.name !== row.name || live.categoryUuid !== targetCatUuid) {
+      svcChanges.push({ uuid: row.uuid, name: row.name, categoryUuid: targetCatUuid, oldName: live.name, oldCatName: svcCatUuidToName.get(live.categoryUuid) ?? live.categoryUuid });
     }
   }
 
   for (const row of materialRows) {
-    const live = liveMaterials.get(row.uuid);
+    const live          = liveMaterials.get(row.uuid);
     const targetCatUuid = matCatMap.get(row.category);
-    if (!targetCatUuid) {
-      console.warn(`  ⚠ No material category UUID for "${row.category}" — skipping ${row.uuid}`);
-      continue;
-    }
-    const nameChanged = live && live.name !== row.name;
-    const catChanged  = live && live.categoryUuid !== targetCatUuid;
-    if (!live || nameChanged || catChanged) {
-      matChanges.push({ uuid: row.uuid, name: row.name, categoryUuid: targetCatUuid, oldName: live?.name, oldCat: live?.categoryUuid });
+    if (!targetCatUuid) { console.warn(`  ⚠ No UUID for material category "${row.category}" — skipping`); continue; }
+    if (!live) { console.warn(`  ⚠ ${row.uuid} not found in live HCP — skipping`); continue; }
+    if (live.name !== row.name || live.categoryUuid !== targetCatUuid) {
+      matChanges.push({ uuid: row.uuid, name: row.name, categoryUuid: targetCatUuid, oldName: live.name, oldCatName: matCatUuidToName.get(live.categoryUuid) ?? live.categoryUuid });
     }
   }
 
-  console.log(`\n── Changes needed: ${svcChanges.length} services, ${matChanges.length} materials ──`);
+  console.log(`\n── Changes: ${svcChanges.length} services, ${matChanges.length} materials ──`);
 
-  if (svcChanges.length === 0 && matChanges.length === 0) {
-    console.log('Nothing to update — HCP is already in sync with CSV.');
-    return;
-  }
-
-  // Print diff
-  for (const c of svcChanges) {
-    if (c.oldName !== c.name) console.log(`  [SVC] ${c.uuid}\n       "${c.oldName ?? '(not found)'}"\n    →  "${c.name}"`);
-    if (c.oldCat  !== c.categoryUuid) console.log(`       cat: ${c.oldCat ?? '?'} → ${c.categoryUuid}`);
-  }
-  for (const c of matChanges) {
-    if (c.oldName !== c.name) console.log(`  [MAT] ${c.uuid}\n       "${c.oldName ?? '(not found)'}"\n    →  "${c.name}"`);
-    if (c.oldCat  !== c.categoryUuid) console.log(`       cat: ${c.oldCat ?? '?'} → ${c.categoryUuid}`);
-  }
-
-  if (DRY_RUN) {
-    console.log('\nDry run complete. Pass --execute to apply.');
-    return;
-  }
-
+  // ── PROBE: test one PATCH, then stop ──────────────────────────────────────
   if (PROBE) {
-    // Test a single PATCH before bulk run
     const first = svcChanges[0] ?? matChanges[0];
-    if (!first) { console.log('Nothing to probe.'); return; }
+    if (!first) { console.log('Nothing to update.'); return; }
     const isService = first.uuid.startsWith('olit_');
-    const endpoint  = isService
-      ? `/alpha/pricebook/services/${first.uuid}`
-      : `/alpha/pricebook/materials/${first.uuid}`;
+    const endpoint  = isService ? `/alpha/pricebook/services/${first.uuid}` : `/alpha/pricebook/materials/${first.uuid}`;
     const body = isService
       ? { name: first.name, pricebook_category_uuid: first.categoryUuid }
       : { name: first.name, material_category_uuid: first.categoryUuid };
-    console.log(`\nProbing PATCH ${endpoint}...`);
-    console.log('Body:', JSON.stringify(body, null, 2));
-    const res = await hcpPatch<unknown>(endpoint, body);
-    console.log('Response:', JSON.stringify(res, null, 2));
-    console.log('\nProbe succeeded. Run with --execute to apply all changes.');
+    console.log(`\n  Item:    "${first.oldName}" → "${first.name}"`);
+    console.log(`  Cat:     "${first.oldCatName}" → target UUID ${first.categoryUuid}`);
+    console.log(`  PATCH ${endpoint}`);
+    const res = await hcpPatch<{ uuid: string; name: string }>(endpoint, body);
+    console.log(`\n  ✅ Response: uuid=${res?.uuid}, name="${res?.name}"`);
+    console.log('\nProbe succeeded — run --execute to apply all changes.');
     return;
   }
 
-  // ── Execute PATCHes ─────────────────────────────────────────────────────────
+  // ── EXECUTE: apply all PATCHes ────────────────────────────────────────────
   let ok = 0, fail = 0;
-
   for (const c of svcChanges) {
     try {
-      await hcpPatch(`/alpha/pricebook/services/${c.uuid}`, {
-        name:                    c.name,
-        pricebook_category_uuid: c.categoryUuid,
-      });
+      await hcpPatch(`/alpha/pricebook/services/${c.uuid}`, { name: c.name, pricebook_category_uuid: c.categoryUuid });
       process.stdout.write('.');
       ok++;
     } catch (e) {
@@ -283,13 +282,9 @@ async function run() {
       console.error(`\n  FAIL ${c.uuid}: ${(e as Error).message.slice(0, 120)}`);
     }
   }
-
   for (const c of matChanges) {
     try {
-      await hcpPatch(`/alpha/pricebook/materials/${c.uuid}`, {
-        name:                  c.name,
-        material_category_uuid: c.categoryUuid,
-      });
+      await hcpPatch(`/alpha/pricebook/materials/${c.uuid}`, { name: c.name, material_category_uuid: c.categoryUuid });
       process.stdout.write('.');
       ok++;
     } catch (e) {
@@ -297,11 +292,8 @@ async function run() {
       console.error(`\n  FAIL ${c.uuid}: ${(e as Error).message.slice(0, 120)}`);
     }
   }
-
   console.log(`\n\nDone. ${ok} updated, ${fail} failed.`);
-  if (fail === 0) {
-    console.log('HCP pricebook is now in sync with data/pricebook.csv.');
-  }
+  if (fail === 0) console.log('HCP pricebook is now in sync with data/pricebook.csv.');
 }
 
 run().catch(err => {
