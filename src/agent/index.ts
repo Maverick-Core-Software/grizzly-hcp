@@ -10,6 +10,7 @@ import { getModel } from './model-router.js';
 import { ragReadTools } from './tools/reads/rag.js';
 import { hcpReadTools } from './tools/reads/hcp.js';
 import { messagingReadTools } from './tools/reads/messaging.js';
+import { homeDepotTools } from './tools/reads/home-depot.js';
 import { resolveTools, resolveInstructions, type Channel } from './resolver.js';
 
 const BASE_INSTRUCTIONS = `You are Maverick, the AI assistant for Grizzly Electrical Solutions.
@@ -77,6 +78,7 @@ const allReadTools = {
   ...ragReadTools,
   ...hcpReadTools,
   ...messagingReadTools,
+  ...homeDepotTools,
 };
 
 export function createMaverickAgent(channel: Channel = 'text') {
