@@ -8,7 +8,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ALIASES_PATH = path.resolve(__dirname, '../data/pricebook-aliases.json');
 
 async function main() {
-  const raw = JSON.parse(await readFile(ALIASES_PATH, 'utf-8')) as Record<string, string[]>;
+  const raw = JSON.parse(await readFile(ALIASES_PATH, 'utf-8').catch(() => '{}')) as Record<string, string[]>;
   const entries = Object.entries(raw).filter(([, phrases]) => phrases.length > 0);
   console.log(`Syncing ${entries.length} aliased items to Qdrant...`);
 
