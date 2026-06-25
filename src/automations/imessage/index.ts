@@ -35,19 +35,22 @@ function saveSeenId(id: string, set: Set<string>) {
 
 const seenIds = loadSeenIds();
 
-// Secondary dedup: same text from same sender within 15s = duplicate (Photon multi-delivery)
+// Secondary dedup: same text from same sender within 2min = duplicate (Photon multi-delivery).
+// Window must exceed the longest agent.generate() call (~60s) because Spectrum buffers
+// re-deliveries and we don't process them until the current loop body awaits complete.
+const DEDUP_WINDOW_MS = 120_000;
 const recentMessages = new Map<string, number>(); // `${senderId}:${text}` → timestamp
 
 function isDuplicate(senderId: string, text: string): boolean {
   const key = `${senderId}:${text}`;
   const last = recentMessages.get(key);
   const now = Date.now();
-  if (last && now - last < 15_000) return true;
+  if (last && now - last < DEDUP_WINDOW_MS) return true;
   recentMessages.set(key, now);
   // Prune old entries every 100 messages
   if (recentMessages.size > 100) {
     for (const [k, t] of recentMessages) {
-      if (now - t > 15_000) recentMessages.delete(k);
+      if (now - t > DEDUP_WINDOW_MS) recentMessages.delete(k);
     }
   }
   return false;
