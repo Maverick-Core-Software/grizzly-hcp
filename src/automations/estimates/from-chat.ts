@@ -20,7 +20,7 @@ import 'dotenv/config';
 import { randomUUID } from 'crypto';
 import { appendFileSync } from 'fs';
 import { searchCustomer, createCustomer } from '../../hcp/estimates.js';
-import { matchLineItems } from '../../rag/price-book.js';
+import { matchLineItems, loadPriceBook, normalize } from '../../rag/price-book.js';
 import { buildLineItem, itemKind } from '../../hcp/build-line-item.js';
 import { applyHdAutoPricing } from './hd-auto-price.js';
 import { commitEstimateWorkflow } from '../../agent/workflows/private-hcp-writes/commit-estimate.js';
@@ -204,17 +204,27 @@ async function run() {
   let commitLineItems: CommitLineItem[];
 
   if (lineItems?.length) {
-    // Pre-structured items from conversation — skip extraction + RAG matching
+    // Pre-structured items from conversation — use provided serviceItemId or resolve via exact name
     progress(`Using ${lineItems.length} pre-structured item(s) from conversation`);
-    commitLineItems = lineItems.map((li, i) => ({
-      name: li.name,
-      description: li.name,
-      unitPrice: li.unitPrice,
-      quantity: li.quantity,
-      kind: itemKind(li.name, '') as CommitLineItem['kind'],
-      serviceItemId: li.serviceItemId,
-      orderIndex: i,
-    }));
+    const catalog = await loadPriceBook();
+    commitLineItems = lineItems.map((li, i) => {
+      let serviceItemId = li.serviceItemId;
+      if (!serviceItemId) {
+        const found = catalog.find(
+          item => item.uuid.startsWith('olit_') && normalize(item.name) === normalize(li.name)
+        );
+        if (found) serviceItemId = found.uuid;
+      }
+      return {
+        name: li.name,
+        description: li.name,
+        unitPrice: li.unitPrice,
+        quantity: li.quantity,
+        kind: itemKind(li.name, '') as CommitLineItem['kind'],
+        serviceItemId,
+        orderIndex: i,
+      };
+    });
     // Append agent-proposed new items (not in pricebook)
     if (newPricebookItems?.length) {
       progress(`Adding ${newPricebookItems.length} new item(s) proposed by agent`);

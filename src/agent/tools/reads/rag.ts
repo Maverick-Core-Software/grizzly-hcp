@@ -24,7 +24,17 @@ export const searchPricebookTool = createTool({
     topK: z.number().optional().describe('Number of results to return (default 5)'),
   }),
   execute: async ({ description, topK }) => {
-    const matches = await searchPriceBook(description, topK ?? 5);
+    const raw = await searchPriceBook(description, topK ?? 5);
+    // Rename uuid → serviceItemId so agent knows what to put in ESTIMATE_READY
+    const matches = raw.map(m => ({
+      serviceItemId: m.uuid,
+      name: m.name,
+      description: m.description,
+      price: m.price,
+      category: m.category,
+      unitOfMeasure: m.unitOfMeasure,
+      score: m.score,
+    }));
     return { matches };
   },
 });

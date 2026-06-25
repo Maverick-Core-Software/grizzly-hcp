@@ -27,7 +27,8 @@
     "voice-server": "tsx src/agent/voice-server.ts",
     "imessage": "tsx src/automations/imessage/index.ts",
     "run": "tsx src/automations/jobs/list-jobs.ts",
-    "sync-aliases": "tsx scripts/sync-aliases.ts"
+    "sync-aliases": "tsx scripts/sync-aliases.ts",
+    "test-mav": "tsx scripts/test-mav-memory.ts"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.85",
