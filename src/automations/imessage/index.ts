@@ -1,6 +1,8 @@
 import 'dotenv/config';
 import { Spectrum } from 'spectrum-ts';
 import { imessage } from 'spectrum-ts/providers/imessage';
+import { whatsappBusiness } from 'spectrum-ts/providers/whatsapp-business';
+import { telegram } from 'spectrum-ts/providers/telegram';
 import { createMaverickAgent } from '../../agent/index.js';
 
 // Per-sender conversation history (resets on restart)
@@ -10,10 +12,19 @@ const MAX_HISTORY = 20; // 10 exchanges
 // Dedup: Photon occasionally delivers the same message twice
 const seenIds = new Set<string>();
 
+const providers = [
+  imessage.config(),
+  whatsappBusiness.config(),
+  // Telegram: requires TELEGRAM_BOT_TOKEN — get one free from @BotFather on Telegram
+  ...(process.env.TELEGRAM_BOT_TOKEN
+    ? [telegram.config({ botToken: process.env.TELEGRAM_BOT_TOKEN })]
+    : []),
+];
+
 const app = await Spectrum({
   projectId: process.env.PROJECT_ID!,
   projectSecret: process.env.PROJECT_SECRET!,
-  providers: [imessage.config()],
+  providers,
 });
 
 const agent = createMaverickAgent('imessage');
