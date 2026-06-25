@@ -111,9 +111,18 @@ const agent = createMaverickAgent('imessage');
 console.log('[imessage] Maverick iMessage listener ready');
 
 for await (const [space, message] of app.messages) {
+  // Log every raw delivery so we can see exactly what Photon sends
+  const rawText = message.content.type === 'text'
+    ? (message.content as { type: 'text'; text: string }).text.slice(0, 60)
+    : `[${message.content.type}]`;
+  console.log(`[imessage] raw: dir=${message.direction} id=${message.id} sender=${message.sender?.id} text="${rawText}"`);
+
   if (message.direction !== 'inbound') continue;
   if (message.content.type !== 'text') continue;
-  if (seenIds.has(message.id)) continue;
+  if (seenIds.has(message.id)) {
+    console.log(`[imessage] dedup (id): ${message.id}`);
+    continue;
+  }
   saveSeenId(message.id, seenIds);
 
   const prompt = (message.content as { type: 'text'; text: string }).text.trim();
