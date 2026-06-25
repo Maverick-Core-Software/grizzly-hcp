@@ -15,6 +15,7 @@ import { hcpReadTools } from './tools/reads/hcp.js';
 import { messagingReadTools } from './tools/reads/messaging.js';
 import { homeDepotTools } from './tools/reads/home-depot.js';
 import { resolveTools, resolveInstructions, type Channel } from './resolver.js';
+import { memoryWriteTools } from './tools/writes/memory.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -195,11 +196,12 @@ const FULL_INSTRUCTIONS = _mavRules
   ? BASE_INSTRUCTIONS + '\n\n' + _mavRules
   : BASE_INSTRUCTIONS;
 
-const allReadTools = {
+const allTools = {
   ...ragReadTools,
   ...hcpReadTools,
   ...messagingReadTools,
   ...homeDepotTools,
+  ...memoryWriteTools,
 };
 
 export function createMaverickAgent(channel: Channel = 'text') {
@@ -208,7 +210,7 @@ export function createMaverickAgent(channel: Channel = 'text') {
     name: 'Maverick',
     instructions: resolveInstructions(channel, FULL_INSTRUCTIONS),
     model: getModel('REASONING'),
-    tools: resolveTools(channel, allReadTools),
+    tools: resolveTools(channel, allTools),
   });
 }
 
