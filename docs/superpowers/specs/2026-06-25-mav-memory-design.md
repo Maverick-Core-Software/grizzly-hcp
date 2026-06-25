@@ -198,6 +198,50 @@ The embedded text for each augmented item becomes:
 
 ---
 
+## Pre-Seeded Rules (ship on day one)
+
+`mav-rules.md` does not start empty. It ships with a core set of deterministic rules that Mav follows every time. These are not learned — they are programmed in and correct from the first conversation. Mav adds to them via `save_rule`; these never get removed or overwritten by learning.
+
+### Complexity detection
+> If Carter provides amperage, footage, routing method (attic / wall / conduit / underground), and end device, the job is fully specified. Skip planning mode entirely. Present the confirmation card immediately. Do not ask questions that aren't necessary.
+>
+> If any of those are missing AND the job is non-trivial (e.g., "2-story, no attic access, circuit to the other side of the house"), enter planning mode first.
+
+### Footage brackets for circuit items
+Each bracket corresponds to a specific pricebook item. Always pick the item whose range covers the stated footage:
+- 0–50 ft → flat-rate circuit item (quantity = 1)
+- 51–150 ft → per-foot circuit item (quantity = stated footage)
+- 151–250 ft → long-run per-foot circuit item (quantity = stated footage)
+
+Never pick a shorter-range item when footage exceeds its ceiling.
+
+### Wire gauge from amperage
+- 15A or 20A → #12 AWG
+- 30A → #10 AWG
+- 40A → #8 AWG
+- 50–60A → #6 AWG
+
+### Conduit wire type
+- Wire inside conduit outdoors or in wet/damp locations → THHN, not Romex
+- Wire in conduit in a dry interior wall → THHN still preferred; Romex is not rated for conduit
+- Open attic, no conduit → Romex (NM-B) acceptable in dry attic
+
+### Conductor count in conduit
+A standard circuit in conduit = 3 conductors: hot + neutral + ground.
+Wire material quantity = conduit footage × 3.
+
+Example: 30' of ½" PVC conduit for a 20A circuit → add THHN #12 at quantity 90.
+
+### Conduit pairing rule
+Every conduit run always produces two line items: one labor (install conduit, type + size, qty = footage) and one material (conduit, type + size, qty = footage). They always match in type, size, and quantity. Never one without the other.
+
+### Device inclusion
+- "Drop a wall" / "drop an outlet" / "terminate at device" → the outlet/device is included in the circuit line item. Do not add a separate device item.
+- "Dedicated GFCI" → add a separate GFCI device line item in addition to the circuit.
+- "GFCI at the end" → same as dedicated GFCI — separate item.
+
+---
+
 ## What This Does Not Cover
 
 - Customer-specific facts ("John Smith's house is slab") — belongs in HCP customer notes or a future customer-memory system
