@@ -209,20 +209,20 @@ async function run() {
     const catalog = await loadPriceBook();
     commitLineItems = lineItems.map((li, i) => {
       let serviceItemId = li.serviceItemId;
-      if (!serviceItemId) {
-        const found = catalog.find(
-          item => item.uuid.startsWith('olit_') && normalize(item.name) === normalize(li.name)
-        );
-        if (found) serviceItemId = found.uuid;
+      // Look up the pricebook entry — first by UUID, then by exact name fallback
+      let pbItem = serviceItemId ? catalog.find(item => item.uuid === serviceItemId) : undefined;
+      if (!pbItem) {
+        pbItem = catalog.find(item => normalize(item.name) === normalize(li.name));
+        if (pbItem) serviceItemId = pbItem.uuid;
       }
       return {
-        name: li.name,
-        description: li.name,
-        unitPrice: li.unitPrice,
-        quantity: li.quantity,
-        kind: itemKind(li.name, '') as CommitLineItem['kind'],
+        name:        pbItem?.name        ?? li.name,
+        description: pbItem?.description ?? '',
+        unitPrice:   (pbItem && pbItem.price > 0) ? pbItem.price : li.unitPrice,
+        quantity:    li.quantity,
+        kind:        itemKind(pbItem?.name ?? li.name, pbItem?.category ?? '') as CommitLineItem['kind'],
         serviceItemId,
-        orderIndex: i,
+        orderIndex:  i,
       };
     });
     // Append agent-proposed new items (not in pricebook)
