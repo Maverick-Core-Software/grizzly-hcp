@@ -6,12 +6,27 @@
  */
 import 'dotenv/config';
 import { Agent } from '@mastra/core/agent';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import { getModel } from './model-router.js';
 import { ragReadTools } from './tools/reads/rag.js';
 import { hcpReadTools } from './tools/reads/hcp.js';
 import { messagingReadTools } from './tools/reads/messaging.js';
 import { homeDepotTools } from './tools/reads/home-depot.js';
 import { resolveTools, resolveInstructions, type Channel } from './resolver.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+function loadMavRules(): string {
+  try {
+    return fs.readFileSync(path.resolve(__dirname, '../../data/mav-rules.md'), 'utf-8');
+  } catch {
+    return '';
+  }
+}
+
+const _mavRules = loadMavRules();
 
 const BASE_INSTRUCTIONS = `You are Maverick, the AI assistant for Grizzly Electrical Solutions.
 
@@ -143,11 +158,12 @@ After Carter provides any missing labor prices and confirms, emit the ESTIMATE_R
 
 **ESTIMATE_READY block format:**
 
-\`[ESTIMATE_READY]{"items":[{"name":"200A Panel Upgrade","quantity":1,"unitPrice":2100.00,"type":"matched","serviceItemId":"olit_xxx"}],"newItems":[{"name":"2\\" PVC Sch 40 Conduit, per ft","description":"HD-sourced. HD price $2.62/ft × 1.45 markup.","category":"Conduit — Materials","unitPrice":3.80,"quantity":45,"saveToBook":true}],"customer":{"name":"..."},"techIds":[],"depositPercent":50}[/ESTIMATE_READY]\`
+\`[ESTIMATE_READY]{"lineItems":[{"name":"200A Panel Upgrade","quantity":1,"unitPrice":2100.00,"type":"matched","serviceItemId":"olit_xxx"}],"newPricebookItems":[{"name":"2\\" PVC Sch 40 Conduit, per ft","description":"HD-sourced. HD price $2.62/ft × 1.45 markup.","category":"Conduit — Materials","unitPrice":3.80,"quantity":45,"saveToBook":true}],"customerName":"John Smith","customerPhone":"555-1234","techIds":[],"depositPercent":50}[/ESTIMATE_READY]\`
 
 Rules:
-- \`items\` = pricebook-matched items. Include \`serviceItemId\` if matched.
-- \`newItems\` = HD-priced or agent-proposed items. \`saveToBook: true\` always for HD-priced.
+- \`lineItems\` = pricebook-matched items. Copy the \`serviceItemId\` directly from the \`search_pricebook\` result for each item — do not invent or omit it.
+- \`newPricebookItems\` = HD-priced or agent-proposed items. \`saveToBook: true\` always for HD-priced.
+- \`customerName\`, \`customerPhone\`, \`customerEmail\` = customer info (use whatever you know).
 - \`techIds\` = [] means Carter + Jaime (default). Override only if Carter specifies.
 - \`depositPercent\` = 50 if total > $5,000, else 0.
 
@@ -175,6 +191,10 @@ Rules:
 - Crew cost: 2 guys × $45/hr = $90/hr — what Grizzly PAYS, never what's charged
 - Use only to sanity-check that a proposed labor price isn't below cost`;
 
+const FULL_INSTRUCTIONS = _mavRules
+  ? BASE_INSTRUCTIONS + '\n\n' + _mavRules
+  : BASE_INSTRUCTIONS;
+
 const allReadTools = {
   ...ragReadTools,
   ...hcpReadTools,
@@ -186,7 +206,7 @@ export function createMaverickAgent(channel: Channel = 'text') {
   return new Agent({
     id: 'maverick',
     name: 'Maverick',
-    instructions: resolveInstructions(channel, BASE_INSTRUCTIONS),
+    instructions: resolveInstructions(channel, FULL_INSTRUCTIONS),
     model: getModel('REASONING'),
     tools: resolveTools(channel, allReadTools),
   });
