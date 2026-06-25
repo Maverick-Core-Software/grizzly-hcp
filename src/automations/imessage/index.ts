@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import { spawn } from 'child_process';
+import fs from 'fs';
 import { Spectrum } from 'spectrum-ts';
 import { imessage } from 'spectrum-ts/providers/imessage';
 import { whatsappBusiness } from 'spectrum-ts/providers/whatsapp-business';
@@ -10,8 +11,47 @@ import { createMaverickAgent } from '../../agent/index.js';
 const histories = new Map<string, Array<{ role: 'user' | 'assistant'; content: string }>>();
 const MAX_HISTORY = 20; // 10 exchanges
 
-// Dedup: Photon occasionally delivers the same message twice
-const seenIds = new Set<string>();
+// Dedup: persisted across restarts so Photon re-deliveries are ignored
+const SEEN_IDS_PATH = 'data/seen-message-ids.json';
+const MAX_SEEN = 500; // rolling cap — older IDs pruned
+
+function loadSeenIds(): Set<string> {
+  try {
+    const ids = JSON.parse(fs.readFileSync(SEEN_IDS_PATH, 'utf-8')) as string[];
+    return new Set(ids);
+  } catch { return new Set(); }
+}
+
+function saveSeenId(id: string, set: Set<string>) {
+  set.add(id);
+  // Keep only the most recent MAX_SEEN ids
+  const arr = [...set];
+  if (arr.length > MAX_SEEN) arr.splice(0, arr.length - MAX_SEEN);
+  try { fs.writeFileSync(SEEN_IDS_PATH, JSON.stringify(arr), 'utf-8'); } catch {}
+  // Sync the in-memory set to the pruned list
+  set.clear();
+  arr.forEach(i => set.add(i));
+}
+
+const seenIds = loadSeenIds();
+
+// Secondary dedup: same text from same sender within 15s = duplicate (Photon multi-delivery)
+const recentMessages = new Map<string, number>(); // `${senderId}:${text}` → timestamp
+
+function isDuplicate(senderId: string, text: string): boolean {
+  const key = `${senderId}:${text}`;
+  const last = recentMessages.get(key);
+  const now = Date.now();
+  if (last && now - last < 15_000) return true;
+  recentMessages.set(key, now);
+  // Prune old entries every 100 messages
+  if (recentMessages.size > 100) {
+    for (const [k, t] of recentMessages) {
+      if (now - t > 15_000) recentMessages.delete(k);
+    }
+  }
+  return false;
+}
 
 // Sender name lookup — phone numbers from Photon dashboard
 const SENDER_NAMES: Record<string, string> = {};
@@ -19,7 +59,13 @@ if (process.env.CARTER_PHONE) SENDER_NAMES[process.env.CARTER_PHONE] = 'Carter';
 if (process.env.JAIME_PHONE)  SENDER_NAMES[process.env.JAIME_PHONE]  = 'Jaime';
 
 function senderName(id: string): string {
-  return SENDER_NAMES[id] ?? 'Carter'; // default to Carter for unknown senders
+  return SENDER_NAMES[id] ?? 'Carter';
+}
+
+// Never let a send failure (rate limit, network) crash the listener
+async function safeSend(space: { send: (t: string) => Promise<unknown> }, text: string) {
+  try { await space.send(text); }
+  catch (e) { console.error('[imessage] send failed:', e instanceof Error ? e.message : e); }
 }
 
 // Parse and fire the estimate pipeline when agent emits [ESTIMATE_READY]
@@ -47,7 +93,8 @@ async function runEstimatePipeline(
 
 const providers = [
   imessage.config(),
-  whatsappBusiness.config(),
+  // WhatsApp: enabled once Photon project is approved (set WHATSAPP_ENABLED=true in .env)
+  ...(process.env.WHATSAPP_ENABLED === 'true' ? [whatsappBusiness.config()] : []),
   // Telegram: add TELEGRAM_BOT_TOKEN to .env — get one free from @BotFather
   ...(process.env.TELEGRAM_BOT_TOKEN
     ? [telegram.config({ botToken: process.env.TELEGRAM_BOT_TOKEN })]
@@ -67,12 +114,16 @@ for await (const [space, message] of app.messages) {
   if (message.direction !== 'inbound') continue;
   if (message.content.type !== 'text') continue;
   if (seenIds.has(message.id)) continue;
-  seenIds.add(message.id);
+  saveSeenId(message.id, seenIds);
 
   const prompt = (message.content as { type: 'text'; text: string }).text.trim();
   const senderId = message.sender?.id ?? 'unknown';
   const name = senderName(senderId);
   if (!prompt) continue;
+  if (isDuplicate(senderId, prompt)) {
+    console.log(`[imessage] [${senderId}] dedup (content): "${prompt.slice(0, 40)}"`);
+    continue;
+  }
 
   const history = histories.get(senderId) ?? [];
 
@@ -94,28 +145,28 @@ for await (const [space, message] of app.messages) {
     const estimateMatch = response.match(ESTIMATE_READY_RE);
     if (estimateMatch) {
       const visibleResponse = response.replace(ESTIMATE_READY_RE, '').trim();
-      if (visibleResponse) await space.send(visibleResponse);
+      if (visibleResponse) await safeSend(space, visibleResponse);
 
-      await space.send('Building estimate in HCP...');
+      await safeSend(space, 'Building estimate in HCP...');
       try {
         const payload = JSON.parse(estimateMatch[1]);
         const est = await runEstimatePipeline(payload);
         if (est.success) {
-          await space.send(`✅ Estimate ready: ${est.estimateUrl}`);
+          await safeSend(space, `✅ Estimate ready: ${est.estimateUrl}`);
         } else {
-          await space.send(`⚠️ Estimate failed: ${est.error ?? 'unknown error'}`);
+          await safeSend(space, `⚠️ Estimate failed: ${est.error ?? 'unknown error'}`);
         }
-      } catch (e) {
-        await space.send('⚠️ Could not create the estimate — check MCC.');
+      } catch {
+        await safeSend(space, '⚠️ Could not create the estimate — check MCC.');
       }
     } else {
-      await space.send(response);
+      await safeSend(space, response);
     }
 
     console.log(`[imessage] [${senderId}/${name}] replied (${response.length} chars)`);
   } catch (e) {
     const err = e instanceof Error ? e.message : String(e);
     console.error(`[imessage] error for ${senderId}:`, err);
-    await space.send('Sorry, something went wrong. Try again in a moment.');
+    await safeSend(space, 'Sorry, something went wrong. Try again in a moment.');
   }
 }
