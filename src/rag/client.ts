@@ -135,3 +135,23 @@ export async function indexPriceBookItem(item: {
   });
   if (!res.ok) throw new Error(`RAG /pricebook/index failed: ${res.status} ${await res.text()}`);
 }
+
+export async function learnPricebookAlias(input: {
+  item_id: string;
+  phrases: string[];
+}): Promise<{ success: boolean; item_name?: string; alias_count?: number; unchanged?: boolean; error?: string }> {
+  try {
+    const res = await fetch(`${RAG_BASE}/pricebook/learn`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      return { success: false, error: `RAG ${res.status}: ${text}` };
+    }
+    return res.json() as Promise<{ success: boolean; item_name?: string; alias_count?: number; unchanged?: boolean }>;
+  } catch (err) {
+    return { success: false, error: String(err) };
+  }
+}
