@@ -83,7 +83,7 @@ export const saveAliasTool = createTool({
       aliases = JSON.parse(await fs.readFile(ALIASES_PATH, 'utf-8'));
     } catch { /* file doesn't exist yet */ }
 
-    const existing = aliases[item_id] ?? [];
+    const existing = (aliases[item_id] ?? []).map(p => p.toLowerCase().trim());
     const cleaned = phrases.map(p => p.toLowerCase().trim()).filter(Boolean);
     const merged = [...new Set([...existing, ...cleaned])];
     aliases[item_id] = merged;
