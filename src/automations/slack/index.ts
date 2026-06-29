@@ -2,6 +2,7 @@ import 'dotenv/config';
 import { App } from '@slack/bolt';
 import { spawn } from 'child_process';
 import { createMaverickAgent } from '../../agent/index.js';
+import { shouldHandleMessage } from './filter.js';
 
 const TOKEN = process.env.SLACK_BOT_TOKEN;
 const APP_TOKEN = process.env.SLACK_APP_TOKEN;
@@ -52,6 +53,7 @@ type SlackMessage = {
   text?: string;
   ts: string;
   channel: string;
+  channel_type?: string;
 };
 
 app.event('message', async ({ event, say }) => {
@@ -60,9 +62,11 @@ app.event('message', async ({ event, say }) => {
   // Ignore bot messages, edits, deletions
   if (msg.subtype || msg.bot_id || !msg.user || !msg.text) return;
 
-  // Filter to the configured channel and operator (if set)
-  if (CHANNEL_ID && msg.channel !== CHANNEL_ID) return;
-  if (OPERATOR_USER_ID && msg.user !== OPERATOR_USER_ID) return;
+  // Answer in the configured ops channel or in a 1:1 DM, operator-only either way
+  if (!shouldHandleMessage(msg.channel, msg.channel_type, msg.user, {
+    channelId: CHANNEL_ID,
+    operatorUserId: OPERATOR_USER_ID,
+  })) return;
 
   // Dedup
   if (seenTs.has(msg.ts)) return;
