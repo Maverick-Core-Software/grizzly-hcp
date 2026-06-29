@@ -32,6 +32,33 @@ import {
 } from '../../operation-log.js';
 import { logAudit } from '../../audit-log.js';
 
+// ─── Deposit math ─────────────────────────────────────────────────────────────
+
+/**
+ * Deposit dollar amount for a percentage of the line-item subtotal.
+ *
+ * setDeposit() always stores a FLAT dollar amount; its `type: 'percent'` is a
+ * cosmetic UI label only and does NOT make HCP recompute anything. So the caller
+ * must derive the actual dollars here.
+ *
+ * Sign convention (confirmed): 'fixed discount' line items store `unitPrice` as a
+ * POSITIVE magnitude — addLineItem() in src/hcp/estimates.ts sends
+ * `toCents(item.unitPrice)` with no negation, and buildLineItem() in
+ * src/hcp/build-line-item.ts sets a positive price for discount-kind items. HCP's
+ * `kind: 'fixed discount'` semantics make it subtract. So we subtract the discount
+ * magnitude exactly once here.
+ */
+export function depositDollarsFromPercent(
+  lineItems: Array<{ unitPrice: number; quantity: number; kind: 'labor' | 'materials' | 'fixed discount' }>,
+  percent: number,
+): number {
+  const subtotal = lineItems.reduce((sum, li) => {
+    const lineTotal = li.unitPrice * li.quantity;
+    return sum + (li.kind === 'fixed discount' ? -lineTotal : lineTotal);
+  }, 0);
+  return +(subtotal * (percent / 100)).toFixed(2);
+}
+
 // ─── Input types ────────────────────────────────────────────────────────────
 
 export interface CommitCustomerNew {
@@ -226,9 +253,12 @@ export async function commitEstimateWorkflow(
     // Step 7: Set deposit (non-fatal)
     if (depositPercent && depositPercent > 0) {
       try {
-        await setDeposit(estimate.uuid, depositPercent, 'percent');
+        // setDeposit's amount is always flat dollars; 'percent' is a cosmetic
+        // label. Derive the real deposit dollars from the line-item subtotal.
+        const depositDollars = depositDollarsFromPercent(lineItems, depositPercent);
+        await setDeposit(estimate.uuid, depositDollars, 'percent');
       } catch {
-        // Non-fatal
+        // Non-fatal: estimate still usable
       }
     }
 
