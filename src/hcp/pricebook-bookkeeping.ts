@@ -31,7 +31,7 @@ export async function recordNewPricebookItem(args: {
       unitOfMeasure,
     });
   } catch (e) {
-    console.error("[pricebook-bookkeeping] CSV append failed (non-fatal):", e);
+    console.error("[pricebook-bookkeeping] CSV append failed (non-fatal) for", args.uuid, args.name, e);
   }
   try {
     await indexPriceBookItem({
@@ -43,6 +43,6 @@ export async function recordNewPricebookItem(args: {
       unitOfMeasure,
     });
   } catch (e) {
-    console.error("[pricebook-bookkeeping] RAG index failed (non-fatal):", e);
+    console.error("[pricebook-bookkeeping] RAG index failed (non-fatal) for", args.uuid, args.name, e);
   }
 }
