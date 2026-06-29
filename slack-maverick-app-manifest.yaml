@@ -1,0 +1,45 @@
+# ── Maverick — dedicated Slack app for grizzly-hcp (mav-slack) ──────────────
+# Why this exists: mav-slack was sharing homelab-monitor's Slack app
+# (A0BEL5VVD40) + bot token. One app with two Socket Mode connections means
+# Slack delivers each event to only ONE connection, so ~half of each bot's
+# messages were silently routed to the wrong process. This manifest creates a
+# SEPARATE app so Maverick owns its own bot + app token. Homelab keeps A0BEL5VVD40.
+#
+# Create at: https://api.slack.com/apps  ->  "Create New App"  ->  "From a manifest"
+#
+# Scopes are pinned to exactly what src/automations/slack/index.ts uses:
+#   - chat:write                         -> say() / chat.postMessage
+#   - {channels,groups,im,mpim}:history  -> read inbound message text
+#   - matching message.* bot events      -> receive those messages
+# Covers public + private + DM regardless of what type C0BDU7PQ12M is.
+# No interactivity/shortcuts — the code has no buttons (text replies only).
+
+display_information:
+  name: Maverick
+  description: Grizzly HCP estimate & ops assistant (Mastra agent)
+  background_color: "#0f1419"
+
+features:
+  bot_user:
+    display_name: maverick
+    always_online: true
+
+oauth_config:
+  scopes:
+    bot:
+      - chat:write
+      - channels:history
+      - groups:history
+      - im:history
+      - mpim:history
+
+settings:
+  event_subscriptions:
+    bot_events:
+      - message.channels
+      - message.groups
+      - message.im
+      - message.mpim
+  socket_mode_enabled: true
+  org_deploy_enabled: false
+  token_rotation_enabled: false
