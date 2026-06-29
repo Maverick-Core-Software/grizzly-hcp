@@ -19,9 +19,11 @@ import {
   addLineItem,
   assignTechnician,
   setDeposit,
-} from '../../../hcp/estimates.js';
+  createPriceBookItem,
+  HCP_VIA_MCP,
+} from '../../../hcp/gateway.js';
 import type { HcpLineItem } from '../../../hcp/estimates.js';
-import { createPriceBookItem } from '../../../hcp/price-book.js';
+import { recordNewPricebookItem } from '../../../hcp/pricebook-bookkeeping.js';
 import {
   createOperation,
   updateOperation,
@@ -167,6 +169,19 @@ export async function commitEstimateWorkflow(
             logPath,
             JSON.stringify({ ...nb, uuid: created.uuid, operationId, createdAt: new Date().toISOString() }) + '\n',
           );
+          if (HCP_VIA_MCP) {
+            // The MCP wrapper is a pure HCP passthrough; replicate the CSV+RAG
+            // bookkeeping the direct price-book.ts does inline. (Direct path still
+            // does it itself, so only run here when routing through the daemon.)
+            await recordNewPricebookItem({
+              uuid: created.uuid,
+              name: nb.name,
+              description: nb.description,
+              price: nb.price,
+              category: nb.category,
+              unitOfMeasure: nb.unitOfMeasure,
+            });
+          }
         } catch {
           // Non-fatal: line item will still be added without a pricebook link
         }
