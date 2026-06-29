@@ -101,7 +101,7 @@ export async function setDeposit(
   await callTool("set_deposit", {
     estimate_id: estimateUuid,
     deposit_amount: flatAmountDollars,
-    deposit_type: type === "percent" ? "percentage" : "fixed",
+    deposit_type: type,
     deposit_due_date: due.toISOString().slice(0, 10),
   });
 }
