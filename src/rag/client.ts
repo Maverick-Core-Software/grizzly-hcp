@@ -5,6 +5,32 @@
 
 const RAG_BASE = process.env.RAG_URL ?? 'http://192.168.1.12:8181';
 
+/** Expand common electrical abbreviations so both forms appear in the query,
+ *  improving BM25/sparse retrieval recall. Pure string substitution, no deps. */
+export function expandElectricalTerms(text: string): string {
+  // 1. Amperage pattern: e.g. "20A" → "20-amp 20A"  (word-boundary on the A)
+  let out = text.replace(/\b(\d+)A\b/g, '$1-amp $1A');
+
+  // 2. Fixed-string replacements (order matters — more specific first)
+  const replacements: [RegExp, string][] = [
+    [/\bGFCI\b/g, 'GFCI ground fault circuit interrupter'],
+    [/\bGFI\b/g, 'GFCI ground fault circuit interrupter GFI'],
+    [/\bAFCI\b/g, 'AFCI arc fault circuit interrupter'],
+    [/\bAHJ\b/g, 'authority having jurisdiction AHJ'],
+    [/\bTDSP\b/g, 'Oncor TDSP transmission distribution service provider'],
+    [/\bSE cable\b/g, 'service entrance cable SE cable'],
+    [/\bNM\b/g, 'NM-B nonmetallic sheathed cable NM Romex'],
+    [/\bRomex\b/g, 'NM-B nonmetallic sheathed cable Romex'],
+    [/\bOncor\b/g, 'Oncor TDSP transmission distribution service provider'],
+  ];
+
+  for (const [pattern, expansion] of replacements) {
+    out = out.replace(pattern, expansion);
+  }
+
+  return out;
+}
+
 export interface Message {
   role: 'user' | 'assistant';
   content: string;
@@ -21,7 +47,7 @@ export async function ragAsk(question: string, topK = 8): Promise<{ answer: stri
   const res = await fetch(`${RAG_BASE}/ask`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ question, top_k: topK }),
+    body: JSON.stringify({ question: expandElectricalTerms(question), top_k: topK }),
   });
   if (!res.ok) throw new Error(`RAG /ask failed: ${res.status} ${await res.text()}`);
   return res.json();
@@ -62,8 +88,9 @@ export async function lookupCustomer(name: string): Promise<string> {
 }
 
 export async function lookupPricing(scope: string): Promise<string> {
+  const expandedScope = expandElectricalTerms(scope);
   const { answer } = await ragAsk(
-    `From the Grizzly price book and past proposals, what are typical pricing ranges for: ${scope}? ` +
+    `From the Grizzly price book and past proposals, what are typical pricing ranges for: ${expandedScope}? ` +
     `Include labor, materials, and common line items. Be specific with dollar amounts when available.`,
     10
   );
@@ -93,7 +120,7 @@ export async function searchPriceBook(description: string, topK = 5): Promise<Pr
   const res = await fetch(`${RAG_BASE}/pricebook/search`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ query: description, top_k: topK }),
+    body: JSON.stringify({ query: expandElectricalTerms(description), top_k: topK }),
   });
   if (!res.ok) throw new Error(`RAG /pricebook/search failed: ${res.status} ${await res.text()}`);
   const data: {
