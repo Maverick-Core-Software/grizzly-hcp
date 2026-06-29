@@ -17,6 +17,7 @@ import { fileURLToPath } from 'url';
 import Anthropic from '@anthropic-ai/sdk';
 import { loadPriceBook } from '../rag/price-book.js';
 import { indexPriceBookItem } from '../rag/client.js';
+import { drainReindexPending } from './pricebook-bookkeeping.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ALIASES_PATH = path.resolve(__dirname, '../../data/pricebook-aliases.json');
@@ -56,6 +57,14 @@ async function generateAliases(name: string, category: string, description: stri
 
 async function run() {
   console.log(`\nPricebook RAG Enrichment — ${DRY_RUN ? 'DRY RUN' : FORCE ? 'FORCE (regenerate all)' : 'incremental'}\n`);
+
+  if (!DRY_RUN) {
+    // Recover any items whose RAG index failed at creation time (RAG was down).
+    const { drained, remaining } = await drainReindexPending();
+    if (drained || remaining) {
+      console.log(`Reindex queue: recovered ${drained}, ${remaining} still pending\n`);
+    }
+  }
 
   const catalog = await loadPriceBook();
   const services = catalog.filter(i => i.uuid.startsWith('olit_'));
