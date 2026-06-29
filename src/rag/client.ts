@@ -12,6 +12,8 @@ export function expandElectricalTerms(text: string): string {
   let out = text.replace(/\b(\d+)A\b/g, '$1-amp $1A');
 
   // 2. Fixed-string replacements (order matters — more specific first)
+  // ponytail: GFCI must precede GFI; GFI expands to a string starting with "GFCI",
+  //           so putting GFI first would trigger double-expansion on the next pass.
   const replacements: [RegExp, string][] = [
     [/\bGFCI\b/g, 'GFCI ground fault circuit interrupter'],
     [/\bGFI\b/g, 'GFCI ground fault circuit interrupter GFI'],
