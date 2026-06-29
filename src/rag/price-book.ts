@@ -210,10 +210,13 @@ export async function matchLineItems(
           const hits = await searchPriceBook(item.description, 3);
           const top = hits[0];
 
-          if (top && top.score >= RAG_SCORE_THRESHOLD) {
+          if (!top) {
+            // RAG returned no hits — log the miss and fall through to Haiku
+            await logMiss(item.description, categoryHint(item.description));
+          } else if (top.score >= RAG_SCORE_THRESHOLD) {
             // Tier 1 (≥0.85): auto-match. Tier 2 (0.60–0.84): accept with needsConfirm.
             match = hitToResult(top);
-          } else if (top && top.score < RAG_SCORE_THRESHOLD) {
+          } else {
             // Tier 3: score too low — try two reformulated queries
 
             // Reformulation 1: category-prefixed query
@@ -239,9 +242,6 @@ export async function matchLineItems(
             if (!match) {
               await logMiss(item.description, categoryHint(item.description, top.category));
             }
-          } else if (!top) {
-            // RAG returned no hits at all — also a miss worth logging
-            await logMiss(item.description, categoryHint(item.description));
           }
         } catch { /* RAG offline — fall through */ }
       }
