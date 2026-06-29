@@ -25,7 +25,7 @@
     "takeoff": "tsx src/takeoff/cli.ts",
     "takeoff:validate": "tsx src/takeoff/cli.ts --validate-mode",
     "voice-server": "tsx src/agent/voice-server.ts",
-    "imessage": "tsx src/automations/imessage/index.ts",
+    "slack": "tsx src/automations/slack/index.ts",
     "run": "tsx src/automations/jobs/list-jobs.ts",
     "sync-aliases": "tsx scripts/sync-aliases.ts",
     "test-mav": "tsx scripts/test-mav-memory.ts"
@@ -35,6 +35,9 @@
     "@ai-sdk/openai": "^3.0.74",
     "@anthropic-ai/sdk": "^0.104.2",
     "@mastra/core": "^1.45.0",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@slack/bolt": "^4.4.0",
+    "@slack/web-api": "^7.9.2",
     "docxtemplater": "^3.68.7",
     "dotenv": "^16.4.5",
     "dxf": "^2.3.0",
@@ -45,7 +48,6 @@
     "playwright": "^1.49.0",
     "qrcode-terminal": "^0.12.0",
     "sharp": "^0.33.5",
-    "spectrum-ts": "^6.1.1",
     "uuid": "^14.0.0",
     "zod": "^3.23.8"
   },

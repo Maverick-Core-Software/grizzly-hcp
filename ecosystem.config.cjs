@@ -20,9 +20,9 @@ module.exports = {
       windowsHide: true,
     },
     {
-      name: 'mav-imessage',
+      name: 'mav-slack',
       script: 'node_modules/tsx/dist/cli.mjs',
-      args: 'src/automations/imessage/index.ts',
+      args: 'src/automations/slack/index.ts',
       cwd: __dirname,
       autorestart: true,
       max_restarts: 10,

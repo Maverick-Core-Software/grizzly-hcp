@@ -19,9 +19,11 @@ import {
   addLineItem,
   assignTechnician,
   setDeposit,
-} from '../../../hcp/estimates.js';
+  createPriceBookItem,
+  HCP_VIA_MCP,
+} from '../../../hcp/gateway.js';
 import type { HcpLineItem } from '../../../hcp/estimates.js';
-import { createPriceBookItem } from '../../../hcp/price-book.js';
+import { recordNewPricebookItem } from '../../../hcp/pricebook-bookkeeping.js';
 import {
   createOperation,
   updateOperation,
@@ -29,6 +31,33 @@ import {
   makeIdempotencyKey,
 } from '../../operation-log.js';
 import { logAudit } from '../../audit-log.js';
+
+// ─── Deposit math ─────────────────────────────────────────────────────────────
+
+/**
+ * Deposit dollar amount for a percentage of the line-item subtotal.
+ *
+ * setDeposit() always stores a FLAT dollar amount; its `type: 'percent'` is a
+ * cosmetic UI label only and does NOT make HCP recompute anything. So the caller
+ * must derive the actual dollars here.
+ *
+ * Sign convention (confirmed): 'fixed discount' line items store `unitPrice` as a
+ * POSITIVE magnitude — addLineItem() in src/hcp/estimates.ts sends
+ * `toCents(item.unitPrice)` with no negation, and buildLineItem() in
+ * src/hcp/build-line-item.ts sets a positive price for discount-kind items. HCP's
+ * `kind: 'fixed discount'` semantics make it subtract. So we subtract the discount
+ * magnitude exactly once here.
+ */
+export function depositDollarsFromPercent(
+  lineItems: Array<{ unitPrice: number; quantity: number; kind: 'labor' | 'materials' | 'fixed discount' }>,
+  percent: number,
+): number {
+  const subtotal = lineItems.reduce((sum, li) => {
+    const lineTotal = li.unitPrice * li.quantity;
+    return sum + (li.kind === 'fixed discount' ? -lineTotal : lineTotal);
+  }, 0);
+  return +(subtotal * (percent / 100)).toFixed(2);
+}
 
 // ─── Input types ────────────────────────────────────────────────────────────
 
@@ -167,6 +196,19 @@ export async function commitEstimateWorkflow(
             logPath,
             JSON.stringify({ ...nb, uuid: created.uuid, operationId, createdAt: new Date().toISOString() }) + '\n',
           );
+          if (HCP_VIA_MCP) {
+            // The MCP wrapper is a pure HCP passthrough; replicate the CSV+RAG
+            // bookkeeping the direct price-book.ts does inline. (Direct path still
+            // does it itself, so only run here when routing through the daemon.)
+            await recordNewPricebookItem({
+              uuid: created.uuid,
+              name: nb.name,
+              description: nb.description,
+              price: nb.price,
+              category: nb.category,
+              unitOfMeasure: nb.unitOfMeasure,
+            });
+          }
         } catch {
           // Non-fatal: line item will still be added without a pricebook link
         }
@@ -211,9 +253,12 @@ export async function commitEstimateWorkflow(
     // Step 7: Set deposit (non-fatal)
     if (depositPercent && depositPercent > 0) {
       try {
-        await setDeposit(estimate.uuid, depositPercent, 'percent');
+        // setDeposit's amount is always flat dollars; 'percent' is a cosmetic
+        // label. Derive the real deposit dollars from the line-item subtotal.
+        const depositDollars = depositDollarsFromPercent(lineItems, depositPercent);
+        await setDeposit(estimate.uuid, depositDollars, 'percent');
       } catch {
-        // Non-fatal
+        // Non-fatal: estimate still usable
       }
     }
 

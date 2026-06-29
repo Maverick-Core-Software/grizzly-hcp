@@ -1,6 +1,6 @@
 import { createTool } from '@mastra/core/tools';
 import { z } from 'zod';
-import { lookupCustomer, lookupPricing, ragDocs, searchPriceBook } from '../../../rag/client.js';
+import { lookupCustomer, lookupPricing, ragAsk, ragDocs, searchPriceBook } from '../../../rag/client.js';
 
 export const lookupCustomerTool = createTool({
   id: 'lookup_customer',
@@ -66,9 +66,27 @@ export const getPriorEstimatesTool = createTool({
   },
 });
 
+export const searchKnowledgeTool = createTool({
+  id: 'search_knowledge',
+  description:
+    'General knowledge search over the Maverick RAG (indexed weekly from HCP plus NEC/Oncor reference docs). ' +
+    'Use this for questions the entity-specific tools do not cover: upcoming schedule, open jobs, recent ' +
+    'estimates, NEC/Oncor/code questions, and general company knowledge. Returns a synthesized answer plus ' +
+    'the source snippets it came from. Note: HCP data here is a weekly snapshot and may be up to a week stale.',
+  inputSchema: z.object({
+    query: z.string().describe('The question or topic to look up, e.g. "what jobs are scheduled this week?"'),
+    topK: z.number().optional().describe('Number of source documents to retrieve (default 15)'),
+  }),
+  execute: async ({ query, topK }) => {
+    const { answer, sources } = await ragAsk(query, topK ?? 15);
+    return { answer, sources };
+  },
+});
+
 export const ragReadTools = {
   lookup_customer:     lookupCustomerTool,
   search_pricebook:    searchPricebookTool,
   lookup_pricing:      lookupPricingTool,
   get_prior_estimates: getPriorEstimatesTool,
+  search_knowledge:    searchKnowledgeTool,
 };
