@@ -3,8 +3,8 @@
  * Endpoint: POST /alpha/pricebook/services (multipart/form-data, prices in cents)
  */
 import { hcpGet, hcpPostForm, hcpDelete } from './client.js';
-import { appendToCsv, removeFromCsv } from '../rag/price-book.js';
-import { indexPriceBookItem } from '../rag/client.js';
+import { removeFromCsv } from '../rag/price-book.js';
+import { recordNewPricebookItem } from './pricebook-bookkeeping.js';
 
 export interface HcpPriceBookItem {
   uuid: string;        // olit_...
@@ -113,25 +113,14 @@ export async function createMaterialItem(item: {
     materialCategoryUuid: res.material_category_uuid,
   };
 
-  await appendToCsv({
-    category:      item.category ?? 'Miscellaneous Material',
-    uuid:          created.uuid,
-    name:          created.name,
-    description:   created.description,
-    price:         created.unitPrice,
-    priceStr:      `$${created.unitPrice.toFixed(2)}`,
-    unitOfMeasure: created.unitOfMeasure,
-  });
-
-  indexPriceBookItem({
+  // Local CSV cache + RAG index (best-effort; a missed index is queued for reindex).
+  await recordNewPricebookItem({
     uuid:          created.uuid,
     name:          created.name,
     description:   created.description,
     price:         created.unitPrice,
     category:      item.category ?? 'Miscellaneous Material',
     unitOfMeasure: created.unitOfMeasure,
-  }).catch(e => {
-    console.warn(`[price-book] RAG index skipped: ${(e as Error).message}`);
   });
 
   return created;
@@ -240,26 +229,14 @@ export async function createPriceBookItem(item: {
     categoryUuid: res.pricebook_category_uuid,
   };
 
-  await appendToCsv({
-    category:      item.category ?? 'Custom',
-    uuid:          created.uuid,
-    name:          created.name,
-    description:   created.description,
-    price:         created.unitPrice,
-    priceStr:      `$${created.unitPrice.toFixed(2)}`,
-    unitOfMeasure: created.unitOfMeasure,
-  });
-
-  // Index in RAG for semantic price book search — non-blocking, best-effort
-  indexPriceBookItem({
+  // Local CSV cache + RAG index (best-effort; a missed index is queued for reindex).
+  await recordNewPricebookItem({
     uuid:          created.uuid,
     name:          created.name,
     description:   created.description,
     price:         created.unitPrice,
     category:      item.category ?? 'Custom',
     unitOfMeasure: created.unitOfMeasure,
-  }).catch(e => {
-    console.warn(`[price-book] RAG index skipped: ${(e as Error).message}`);
   });
 
   return created;
