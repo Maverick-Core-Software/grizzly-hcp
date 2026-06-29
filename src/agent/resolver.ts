@@ -1,4 +1,4 @@
-export type Channel = 'text' | 'voice' | 'cli' | 'employee' | 'imessage';
+export type Channel = 'text' | 'voice' | 'cli' | 'employee' | 'slack';
 
 // Excluded from voice (not meaningful over phone)
 const VOICE_EXCLUDED = new Set(['upload_photo', 'draft_reply']);
@@ -34,17 +34,17 @@ const CLI_SUFFIX = `
 
 You are in CLI/batch mode. The approved payload has already been confirmed by Carter. Execute the requested action directly without asking for additional confirmation.`;
 
-const IMESSAGE_SUFFIX = `
+const SLACK_SUFFIX = `
 
-You are responding via iMessage — a text message on someone's phone.
+You are responding via Slack.
 
-**Brevity rules — follow these hard:**
-- Planning mode: 3-5 lines max per response. No multi-paragraph analysis.
-- Ask ONE question per message. If you need two things, ask the most important one first and get the other next round.
+**Format rules:**
+- Use Slack markdown: *bold*, _italic_, \`code\`, \`\`\`code blocks\`\`\`.
+- Keep responses concise — Carter is reading on desktop or phone. Bullet points are fine.
+- Ask ONE question per message. Get the most important thing first.
 - State assumptions in one short phrase ("assuming attic routing") — don't ask about them.
-- Skip code notes, labor hour breakdowns, and detailed material analysis unless Carter asks. Save that for the spec sheet.
-- Build mode: keep the spec sheet compact. One line per item. Carter is reading on a phone.
-- If a job is straightforward (a circuit, a fixture, a device swap), move through planning in 1-2 exchanges and get to the spec.`;
+- For estimates: keep the spec compact, one line per item.
+- If a job is simple, move through planning in 1-2 exchanges and get to the spec.`;
 
 const EMPLOYEE_INSTRUCTIONS = `You are Maverick, the assistant for Grizzly Electrical Solutions employees.
 
@@ -70,6 +70,6 @@ export function resolveInstructions(channel: Channel, base: string): string {
   if (channel === 'voice') return base + VOICE_SUFFIX;
   if (channel === 'cli') return base + CLI_SUFFIX;
   if (channel === 'employee') return EMPLOYEE_INSTRUCTIONS;
-  if (channel === 'imessage') return base + IMESSAGE_SUFFIX;
+  if (channel === 'slack') return base + SLACK_SUFFIX;
   return base;
 }
