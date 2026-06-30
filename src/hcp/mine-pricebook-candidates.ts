@@ -46,6 +46,7 @@ export function normalize(s: string): string {
 }
 
 export function modalValue(arr: number[]): number {
+  if (arr.length === 0) return 0;  // ponytail: 0 = no price data seen; Task 4 displays as $0.00
   const counts = new Map<number, number>();
   for (const v of arr) counts.set(v, (counts.get(v) ?? 0) + 1);
   let best = arr[0];
@@ -90,4 +91,5 @@ async function run() {
   throw new Error('Not implemented yet');
 }
 
-run().catch(err => { console.error(err.message); process.exit(1); });
+const isMain = /mine-pricebook-candidates\.(ts|js)$/.test(process.argv[1] ?? '');
+if (isMain) run().catch(err => { console.error(err.message); process.exit(1); });
