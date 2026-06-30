@@ -178,9 +178,9 @@ function buildCandidates(
     const kindCounts = new Map<string, number>();
     for (const k of data.kinds) kindCounts.set(k, (kindCounts.get(k) ?? 0) + 1);
     let kind = 'labor';
-    let bestKindCount = 0;
+    let bestKindCount = kindCounts.get('labor') ?? 0;
     for (const [k, c] of kindCounts) {
-      if (c > bestKindCount) { kind = k; bestKindCount = c; }
+      if (k !== 'labor' && c > bestKindCount) { kind = k; bestKindCount = c; }
     }
 
     out.push({ displayName: data.displayName, uses: data.uses, modalPrice, kind });
@@ -194,9 +194,9 @@ function printTable(candidates: Candidate[]): void {
   console.log('\n' + header);
   console.log('-'.repeat(header.length));
   candidates.forEach((c, i) => {
-    const num = String(i + 1).padStart(2);
+    const num = String(i + 1).padStart(3);
     const price = ('$' + c.modalPrice.toFixed(2)).padStart(9);
-    console.log(` ${num}  ${c.displayName.padEnd(nameW)}  ${String(c.uses).padStart(4)}  ${price}  ${c.kind}`);
+    console.log(`${num}  ${c.displayName.padEnd(nameW)}  ${String(c.uses).padStart(4)}  ${price}  ${c.kind}`);
   });
 }
 
@@ -258,7 +258,7 @@ async function run() {
     }
   }
 
-  await appendToState(promoted);
+  if (promoted.length > 0) await appendToState(promoted);
   console.log(`\nDone. ${promoted.length}/${candidates.length} items added.`);
   if (promoted.length < candidates.length) {
     console.log(`${candidates.length - promoted.length} failed — see errors above.`);
