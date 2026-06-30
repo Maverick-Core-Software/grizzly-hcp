@@ -76,9 +76,19 @@ export const searchKnowledgeTool = createTool({
   inputSchema: z.object({
     query: z.string().describe('The question or topic to look up, e.g. "what jobs are scheduled this week?"'),
     topK: z.number().optional().describe('Number of source documents to retrieve (default 15)'),
+    source_filter: z.enum(['code', 'customer', 'pricing', 'all']).optional()
+      .describe('Filter results by source type. code=NEC/electrical reference, customer=customer records/estimates, pricing=pricebook/pricing, all=no filter (default)'),
   }),
-  execute: async ({ query, topK }) => {
-    const { answer, sources } = await ragAsk(query, topK ?? 15);
+  execute: async ({ query, topK, source_filter }) => {
+    const prefixMap: Record<string, string> = {
+      code: '[CODE] ',
+      customer: '[CUSTOMER] ',
+      pricing: '[PRICING] ',
+    };
+    const prefixed = (source_filter && source_filter !== 'all')
+      ? `${prefixMap[source_filter]}${query}`
+      : query;
+    const { answer, sources } = await ragAsk(prefixed, topK ?? 15);
     return { answer, sources };
   },
 });

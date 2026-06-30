@@ -24,6 +24,7 @@ export interface MatchResult {
   item: PriceBookItem;
   score: number;       // 0–1, higher = better match
   exact: boolean;
+  needsConfirm?: boolean;  // true when score is 0.60–0.84 (medium confidence)
 }
 
 let _cache: PriceBookItem[] | null = null;
@@ -78,7 +79,10 @@ export async function findBestMatch(description: string, threshold = 0.6): Promi
   return best;
 }
 
-const RAG_SCORE_THRESHOLD = 0.60;
+const RAG_SCORE_HIGH      = 0.85;  // auto-match, no confirmation needed
+const RAG_SCORE_THRESHOLD = 0.60;  // minimum to accept; 0.60–0.84 sets needsConfirm
+
+const MISS_LOG_PATH = path.resolve(__dirname, '../../data/pricebook-misses.jsonl');
 
 /**
  * Claude Haiku fallback: match a description against the full catalog when RAG misses.
@@ -118,11 +122,69 @@ async function claudeMatch(description: string, catalog: PriceBookItem[]): Promi
   }
 }
 
+/** Append a miss record to data/pricebook-misses.jsonl (create file if absent). */
+async function logMiss(description: string, category: string): Promise<void> {
+  const line = JSON.stringify({ description, category, timestamp: new Date().toISOString() });
+  try {
+    await fs.appendFile(MISS_LOG_PATH, line + '\n', 'utf-8');
+  } catch {
+    // non-fatal — don't let logging failures break the estimate pipeline
+  }
+}
+
+/**
+ * Extract a rough category hint from a description string.
+ * Used as the prefix for reformulation-1 queries.
+ */
+function categoryHint(description: string, ragCategory?: string): string {
+  if (ragCategory) return ragCategory;
+  const d = description.toLowerCase();
+  if (d.includes('panel') || d.includes('main'))   return 'Panel';
+  if (d.includes('circuit') || d.includes('breaker')) return 'Circuit';
+  if (d.includes('outlet') || d.includes('receptacle')) return 'Outlet';
+  if (d.includes('switch'))                          return 'Switch';
+  if (d.includes('light') || d.includes('fixture')) return 'Lighting';
+  if (d.includes('wire') || d.includes('conduit'))  return 'Wiring';
+  if (d.includes('fan'))                             return 'Fan';
+  if (d.includes('ev') || d.includes('charger'))    return 'EV';
+  return 'Electrical';
+}
+
+/**
+ * Return the first 3 significant words (length > 3) from a description.
+ * Used as reformulation-2 query.
+ */
+function threeKeyWords(description: string): string {
+  const words = description.split(/\s+/).filter(w => w.length > 3);
+  return words.slice(0, 3).join(' ') || description;
+}
+
+/** Convert a RAG PriceBookMatch hit into a MatchResult. */
+function hitToResult(top: { category: string; uuid: string; name: string; description: string; price: number; unitOfMeasure: string; score: number }): MatchResult {
+  return {
+    item: {
+      category: top.category,
+      uuid: top.uuid,
+      name: top.name,
+      description: top.description,
+      price: top.price,
+      priceStr: `$${top.price.toFixed(2)}`,
+      unitOfMeasure: top.unitOfMeasure,
+    },
+    score: top.score,
+    exact: false,
+    needsConfirm: top.score < RAG_SCORE_HIGH,
+  };
+}
+
 /**
  * Match all line items at once.
  * 1. Exact name lookup (free, instant)
- * 2. RAG semantic search (when online)
- * 3. Claude Haiku fallback (replaces word-overlap)
+ * 2. RAG semantic search with three-tier confidence:
+ *    - ≥ 0.85: auto-match
+ *    - 0.60–0.84: accept with needsConfirm: true
+ *    - < 0.60: try 2 reformulated queries before giving up
+ * 3. Claude Haiku fallback (when RAG misses entirely)
  * 4. null → flagged for manual pricing
  */
 export async function matchLineItems(
@@ -142,25 +204,44 @@ export async function matchLineItems(
         match = { item: exact, score: 1.0, exact: true };
       }
 
-      // Step 2: RAG semantic search
+      // Step 2: RAG semantic search with CRAG-style confidence tiering
       if (!match && ragOnline) {
         try {
           const hits = await searchPriceBook(item.description, 3);
           const top = hits[0];
-          if (top && top.score >= RAG_SCORE_THRESHOLD) {
-            match = {
-              item: {
-                category: top.category,
-                uuid: top.uuid,
-                name: top.name,
-                description: top.description,
-                price: top.price,
-                priceStr: `$${top.price.toFixed(2)}`,
-                unitOfMeasure: top.unitOfMeasure,
-              },
-              score: top.score,
-              exact: false,
-            };
+
+          if (!top) {
+            // RAG returned no hits — log the miss and fall through to Haiku
+            await logMiss(item.description, categoryHint(item.description));
+          } else if (top.score >= RAG_SCORE_THRESHOLD) {
+            // Tier 1 (≥0.85): auto-match. Tier 2 (0.60–0.84): accept with needsConfirm.
+            match = hitToResult(top);
+          } else {
+            // Tier 3: score too low — try two reformulated queries
+
+            // Reformulation 1: category-prefixed query
+            const hint = categoryHint(item.description, top.category);
+            const q1 = `${hint}: ${item.description}`;
+            const hits1 = await searchPriceBook(q1, 3);
+            const top1 = hits1[0];
+            if (top1 && top1.score >= RAG_SCORE_THRESHOLD) {
+              match = hitToResult(top1);
+            }
+
+            // Reformulation 2: first 3 significant words
+            if (!match) {
+              const q2 = threeKeyWords(item.description);
+              const hits2 = await searchPriceBook(q2, 3);
+              const top2 = hits2[0];
+              if (top2 && top2.score >= RAG_SCORE_THRESHOLD) {
+                match = hitToResult(top2);
+              }
+            }
+
+            // Still no match after reformulations — log the miss
+            if (!match) {
+              await logMiss(item.description, categoryHint(item.description, top.category));
+            }
           }
         } catch { /* RAG offline — fall through */ }
       }
