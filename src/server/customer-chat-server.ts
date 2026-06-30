@@ -24,6 +24,10 @@ const ESTIMATE_READY_RE = /\[ESTIMATE_READY\]([\s\S]*?)\[\/ESTIMATE_READY\]/;
 const MAX_HISTORY = 20;
 const SESSION_TTL_MS = 24 * 60 * 60 * 1000;
 
+// Module-level singletons — no need to reconstruct on every request.
+const agent = createMaverickAgent('customer');
+const twilioClient = new twilio.Twilio(process.env.TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
+
 // Ensure data dir exists for session log
 try { mkdirSync('data', { recursive: true }); } catch { /* already exists */ }
 
@@ -82,8 +86,7 @@ function spawnPipeline(
 }
 
 async function sendSms(to: string, body: string): Promise<void> {
-  const client = twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
-  await client.messages.create({ from: TWILIO_PHONE_NUMBER, to, body });
+  await twilioClient.messages.create({ from: TWILIO_PHONE_NUMBER, to, body });
 }
 
 const server = http.createServer(async (req, res) => {
@@ -117,48 +120,45 @@ const server = http.createServer(async (req, res) => {
   const messageBody = (params.Body ?? '').trim();
   if (!fromPhone || !messageBody) {
     res.writeHead(200, { 'content-type': 'text/xml' });
-    res.end(twiml(''));
+    res.end('<?xml version="1.0" encoding="UTF-8"?><Response/>');
     return;
   }
 
   console.log(`[customer] ${fromPhone}: "${messageBody.slice(0, 60)}"`);
 
-  const session = getSession(fromPhone);
-  const agent = createMaverickAgent('customer');
+  // Respond to Twilio immediately — LLM latency exceeds the 5s webhook timeout.
+  // Real reply goes out via sendSms in the setImmediate below.
+  res.writeHead(200, { 'content-type': 'text/xml' });
+  res.end('<?xml version="1.0" encoding="UTF-8"?><Response/>');
 
-  const contextLines = session.history
-    .map(m => `${m.role === 'user' ? 'Customer' : 'Grizzly'}: ${m.content}`)
-    .join('\n');
-  const fullPrompt = contextLines
-    ? `${contextLines}\nCustomer: ${messageBody}`
-    : messageBody;
+  setImmediate(async () => {
+    const session = getSession(fromPhone);
+    const contextLines = session.history
+      .map(m => `${m.role === 'user' ? 'Customer' : 'Grizzly'}: ${m.content}`)
+      .join('\n');
+    const fullPrompt = contextLines ? `${contextLines}\nCustomer: ${messageBody}` : messageBody;
 
-  let agentReply = '';
-  try {
-    const result = await agent.generate(fullPrompt);
-    agentReply = typeof result.text === 'string' ? result.text : '';
-  } catch (e) {
-    console.error('[customer] Agent error:', e);
-    res.writeHead(200, { 'content-type': 'text/xml' });
-    res.end(twiml('Sorry, something went wrong on our end. Try again in a moment!'));
-    return;
-  }
-
-  session.history.push({ role: 'user', content: messageBody });
-  const estimateMatch = agentReply.match(ESTIMATE_READY_RE);
-
-  if (estimateMatch) {
-    const visibleReply = agentReply.replace(ESTIMATE_READY_RE, '').trim();
-    const sendText = visibleReply || 'Building your estimate now ⚡';
-    session.history.push({ role: 'assistant', content: sendText });
-    if (session.history.length > MAX_HISTORY) {
-      session.history.splice(0, session.history.length - MAX_HISTORY);
+    let agentReply = '';
+    try {
+      const result = await agent.generate(fullPrompt);
+      agentReply = typeof result.text === 'string' ? result.text : '';
+    } catch (e) {
+      console.error('[customer] Agent error:', e);
+      await sendSms(fromPhone, "Sorry, something went wrong on our end. Try again in a moment!")
+        .catch(() => {});
+      return;
     }
 
-    res.writeHead(200, { 'content-type': 'text/xml' });
-    res.end(twiml(sendText));
+    session.history.push({ role: 'user', content: messageBody });
+    const estimateMatch = agentReply.match(ESTIMATE_READY_RE);
 
-    setImmediate(async () => {
+    if (estimateMatch) {
+      const visibleReply = agentReply.replace(ESTIMATE_READY_RE, '').trim();
+      const sendText = visibleReply || 'Building your estimate now ⚡';
+      session.history.push({ role: 'assistant', content: sendText });
+
+      await sendSms(fromPhone, sendText).catch(e => console.error('[customer] SMS error:', e));
+
       try {
         const payload = JSON.parse(estimateMatch[1]) as Record<string, unknown>;
         payload.customerPhone = fromPhone;
@@ -194,13 +194,13 @@ const server = http.createServer(async (req, res) => {
           await sendSms(
             fromPhone,
             'Sent! Check your text/email for the estimate. Just approve and sign — takes 30 seconds — and you\'re on the books. ✅',
-          );
+          ).catch(() => {});
           console.log(`[customer] Estimate created and sent: ${est.estimateUrl}`);
         } else {
           await sendSms(
             fromPhone,
             "Hmm, something went wrong building the estimate. Carter will reach out shortly!",
-          );
+          ).catch(() => {});
           console.error('[customer] Pipeline failed:', est.error);
         }
       } catch (e) {
@@ -210,16 +210,13 @@ const server = http.createServer(async (req, res) => {
           'Sorry, we hit a snag. Carter will follow up with you directly!',
         ).catch(() => {});
       }
-    });
-  } else {
-    session.history.push({ role: 'assistant', content: agentReply });
-    if (session.history.length > MAX_HISTORY) {
-      session.history.splice(0, session.history.length - MAX_HISTORY);
-    }
 
-    res.writeHead(200, { 'content-type': 'text/xml' });
-    res.end(twiml(agentReply));
-  }
+    } else {
+      session.history.push({ role: 'assistant', content: agentReply });
+      if (session.history.length > MAX_HISTORY) session.history.splice(0, session.history.length - MAX_HISTORY);
+      await sendSms(fromPhone, agentReply).catch(e => console.error('[customer] SMS error:', e));
+    }
+  });
 });
 
 server.listen(PORT, () => {
