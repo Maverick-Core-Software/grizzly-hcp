@@ -180,7 +180,7 @@ function buildCandidates(
     let kind = 'labor';
     let bestKindCount = 0;
     for (const [k, c] of kindCounts) {
-      if (c > bestKindCount || (c === bestKindCount && k < kind)) { kind = k; bestKindCount = c; }
+      if (c > bestKindCount) { kind = k; bestKindCount = c; }
     }
 
     out.push({ displayName: data.displayName, uses: data.uses, modalPrice, kind });
