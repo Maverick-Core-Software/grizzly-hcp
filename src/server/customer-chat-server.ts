@@ -188,8 +188,11 @@ const server = http.createServer(async (req, res) => {
             `=== Customer SMS Transcript ===\n${transcript}`,
           ).catch(e => console.warn('[customer] Could not save transcript:', e));
 
-          await sendEstimate(est.estimateUuid)
-            .catch(e => console.warn('[customer] Could not send estimate:', e));
+          await sendEstimate(est.estimateUuid, {
+            phone: fromPhone,
+            email: typeof payload.customerEmail === 'string' ? payload.customerEmail : undefined,
+            customerName: typeof payload.customerName === 'string' ? payload.customerName : undefined,
+          }).catch(e => console.warn('[customer] Could not send estimate:', e));
 
           await sendSms(
             fromPhone,

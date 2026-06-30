@@ -215,31 +215,51 @@ export async function setDeposit(
 
 // ─── Send ─────────────────────────────────────────────────────────────────────
 
-/**
- * Send an estimate to the customer via HCP (emails + texts them a link to approve).
- * ponytail: endpoint discovered via `npm run intercept` — run intercept, open any estimate
- * in HCP, click "Send Estimate", note the request URL/body in terminal, then update this call.
- */
-export async function sendEstimate(estimateUuid: string): Promise<void> {
-  // TODO: Run `npm run intercept` and click "Send Estimate" in HCP to discover exact endpoint.
-  // Common pattern: hcpPost(`/pro/estimates/${estimateUuid}/send`, {})
-  // or: hcpPostForm(`/pro/estimates/${estimateUuid}/send`, {})
-  await hcpPost(`/pro/estimates/${estimateUuid}/send`, {});
+/** Send an estimate to the customer via HCP text + email. Phone is required to SMS; email is optional. */
+export async function sendEstimate(
+  estimateUuid: string,
+  opts: { phone?: string; email?: string; customerName?: string } = {}
+): Promise<void> {
+  const sends: Promise<unknown>[] = [];
+
+  if (opts.phone) {
+    sends.push(hcpPost(`/api/v2/pro/requests/text_estimate`, {
+      request_uuid: estimateUuid,
+      request_uuids: [estimateUuid],
+      checklist_ids: [],
+      custom_sms_message: 'Your estimate from Grizzly Electrical Solutions',
+      phone_number: opts.phone,
+      estimate_plus: true,
+    }));
+  }
+
+  if (opts.email) {
+    const name = opts.customerName ?? 'there';
+    sends.push(hcpPost(`/api/v2/pro/requests/email_estimate`, {
+      attachment_ids: [],
+      request_uuid: estimateUuid,
+      request_uuids: [estimateUuid],
+      checklist_ids: [],
+      email: opts.email,
+      custom_email_subject: 'Your estimate from Grizzly Electrical Solutions',
+      custom_message: `Hi ${name},\n\nThank you for reaching out to Grizzly Electrical Solutions! Please see your estimate attached. You can approve or decline directly from the link. Once approved, we'll reach out to get you on the schedule.\n\nQuestions? Call or text us at (469) 863-9804.`,
+      estimate_plus: true,
+    }));
+  }
+
+  await Promise.all(sends);
 }
 
-/**
- * Write conversation transcript to the estimate's internal notes field.
- * Carter and Jaime see this when they open the estimate in HCP.
- * ponytail: endpoint discovered via `npm run intercept` — edit any estimate note in HCP
- * and note the PATCH/PUT path and body field name, then update this call.
- */
+/** Write conversation transcript to the estimate's notes (visible to Carter + Jaime in HCP). */
 export async function updateEstimateNotes(
   estimateUuid: string,
   notes: string
 ): Promise<void> {
-  // TODO: Run `npm run intercept` and edit estimate notes in HCP to discover exact endpoint.
-  // Common pattern: hcpPatch(`/alpha/estimates/${estimateUuid}`, { note: notes })
-  await hcpPatch(`/alpha/estimates/${estimateUuid}`, { note: notes });
+  await hcpPost(`/api/estimates/${estimateUuid}/notes`, {
+    estimate_uuid: estimateUuid,
+    content: notes,
+    expand: ['updated_by'],
+  });
 }
 
 export async function emailEstimate(opts: {
