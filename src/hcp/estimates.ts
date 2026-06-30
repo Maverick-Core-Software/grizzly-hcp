@@ -215,6 +215,33 @@ export async function setDeposit(
 
 // ─── Send ─────────────────────────────────────────────────────────────────────
 
+/**
+ * Send an estimate to the customer via HCP (emails + texts them a link to approve).
+ * ponytail: endpoint discovered via `npm run intercept` — run intercept, open any estimate
+ * in HCP, click "Send Estimate", note the request URL/body in terminal, then update this call.
+ */
+export async function sendEstimate(estimateUuid: string): Promise<void> {
+  // TODO: Run `npm run intercept` and click "Send Estimate" in HCP to discover exact endpoint.
+  // Common pattern: hcpPost(`/pro/estimates/${estimateUuid}/send`, {})
+  // or: hcpPostForm(`/pro/estimates/${estimateUuid}/send`, {})
+  await hcpPost(`/pro/estimates/${estimateUuid}/send`, {});
+}
+
+/**
+ * Write conversation transcript to the estimate's internal notes field.
+ * Carter and Jaime see this when they open the estimate in HCP.
+ * ponytail: endpoint discovered via `npm run intercept` — edit any estimate note in HCP
+ * and note the PATCH/PUT path and body field name, then update this call.
+ */
+export async function updateEstimateNotes(
+  estimateUuid: string,
+  notes: string
+): Promise<void> {
+  // TODO: Run `npm run intercept` and edit estimate notes in HCP to discover exact endpoint.
+  // Common pattern: hcpPatch(`/alpha/estimates/${estimateUuid}`, { note: notes })
+  await hcpPatch(`/alpha/estimates/${estimateUuid}`, { note: notes });
+}
+
 export async function emailEstimate(opts: {
   primaryEstimateUuid: string;
   allEstimateUuids: string[];
