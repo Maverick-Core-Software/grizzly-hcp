@@ -85,6 +85,80 @@ export function aggregateCandidates(
   return agg;
 }
 
+// ── State file ─────────────────────────────────────────────────────────────
+
+async function loadPricebookNames(): Promise<Set<string>> {
+  const services = await listAllServices();
+  return new Set(services.map(s => normalize(s.name)));
+}
+
+async function loadStateNames(): Promise<Set<string>> {
+  try {
+    const raw = await fs.readFile(STATE_PATH, 'utf-8');
+    const state: StateFile = JSON.parse(raw);
+    return new Set((state.promoted ?? []).map(p => normalize(p.name)));
+  } catch {
+    return new Set();   // file doesn't exist yet on first run
+  }
+}
+
+async function appendToState(items: Array<{ name: string; uuid: string }>): Promise<void> {
+  let state: StateFile = { promoted: [] };
+  try {
+    const raw = await fs.readFile(STATE_PATH, 'utf-8');
+    state = JSON.parse(raw);
+  } catch { /* new file */ }
+
+  const today = new Date().toISOString().slice(0, 10);
+  state.promoted.push(...items.map(i => ({ name: i.name, uuid: i.uuid, addedAt: today })));
+  await fs.writeFile(STATE_PATH, JSON.stringify(state, null, 2), 'utf-8');
+}
+
+// ── HCP fetching ───────────────────────────────────────────────────────────
+
+interface HcpJob { id: string; invoice_number: string; }
+
+async function fetchAllJobs(): Promise<HcpJob[]> {
+  const all: HcpJob[] = [];
+  let page = 1;
+  while (true) {
+    const res = await hcpGet<{ data: { data: HcpJob[] }; total_page_count: number }>(
+      `/alpha/jobs?page=${page}&page_size=100`,
+    );
+    const batch = res.data?.data ?? [];
+    all.push(...batch);
+    process.stdout.write(`\r  Fetched ${all.length} jobs (page ${page}/${res.total_page_count})`);
+    if (page >= res.total_page_count) break;
+    page++;
+  }
+  console.log();
+  return all;
+}
+
+async function fetchLineItems(jobId: string): Promise<RawLineItem[]> {
+  try {
+    const res = await hcpGet<Record<string, unknown>>(`/alpha/jobs/${jobId}/line_items`);
+    const items = (res['line_items'] ?? res['data'] ?? []) as RawLineItem[];
+    return Array.isArray(items) ? items : [];
+  } catch {
+    return [];
+  }
+}
+
+// ponytail: 5-concurrent limit matches known HCP rate tolerance (see sync-estimates.ts)
+async function pMap<T, R>(items: T[], fn: (item: T) => Promise<R>, concurrency: number): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let next = 0;
+  async function worker() {
+    while (next < items.length) {
+      const i = next++;
+      results[i] = await fn(items[i]);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, worker));
+  return results;
+}
+
 // ── Placeholder main (will be replaced in Task 4) ─────────────────────────
 
 async function run() {
