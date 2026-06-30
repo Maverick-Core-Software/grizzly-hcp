@@ -13,11 +13,13 @@ import { fileURLToPath } from 'node:url';
 import readline from 'node:readline/promises';
 import { hcpGet } from './client.js';
 import { listAllServices, createPriceBookItem } from './price-book.js';
+import { searchPriceBook } from '../rag/client.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const STATE_PATH = path.resolve(__dirname, '../../data/promoted-items.json');
 const CONCURRENCY = 5;
 const MIN_USES = 2;
+const RAG_DEDUP_THRESHOLD = 0.85;
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -200,6 +202,30 @@ function printTable(candidates: Candidate[]): void {
   });
 }
 
+// ── RAG semantic dedup ─────────────────────────────────────────────────────
+
+async function ragDedupFilter(
+  candidates: Candidate[],
+): Promise<{ kept: Candidate[]; skipped: number }> {
+  let done = 0;
+  const results = await pMap(candidates, async c => {
+    done++;
+    process.stdout.write(`\r  ${done}/${candidates.length}`);
+    try {
+      const hits = await searchPriceBook(c.displayName, 1);
+      const covered = (hits[0]?.score ?? 0) >= RAG_DEDUP_THRESHOLD;
+      return { c, keep: !covered };
+    } catch {
+      return { c, keep: true }; // RAG offline — keep candidate conservatively
+    }
+  }, CONCURRENCY);
+  console.log();
+  return {
+    kept: results.filter(r => r.keep).map(r => r.c),
+    skipped: results.filter(r => !r.keep).length,
+  };
+}
+
 // ── Main ───────────────────────────────────────────────────────────────────
 
 async function run() {
@@ -222,14 +248,18 @@ async function run() {
 
   const lineItemsByJob = new Map(lineItemsList.map(e => [e.id, e.items]));
   const agg = aggregateCandidates(jobs, lineItemsByJob);
-  const candidates = buildCandidates(agg, pricebookNames, stateNames);
+  const raw = buildCandidates(agg, pricebookNames, stateNames);
+
+  console.log('\nRAG semantic dedup...');
+  const { kept: candidates, skipped } = await ragDedupFilter(raw);
+  if (skipped > 0) console.log(`  Skipped ${skipped} already covered by pricebook (score ≥${RAG_DEDUP_THRESHOLD})`);
 
   if (candidates.length === 0) {
     console.log('\nNothing new to add — all recurring custom items are already in the pricebook.');
     return;
   }
 
-  console.log(`\nMining complete. Found ${candidates.length} candidate(s):`);
+  console.log(`\nMining complete. Found ${candidates.length} candidate(s) (${raw.length - candidates.length} filtered by RAG):`);
   printTable(candidates);
 
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
