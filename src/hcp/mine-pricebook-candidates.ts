@@ -159,11 +159,111 @@ async function pMap<T, R>(items: T[], fn: (item: T) => Promise<R>, concurrency: 
   return results;
 }
 
-// ── Placeholder main (will be replaced in Task 4) ─────────────────────────
+// ── Filtering + presentation ────────────────────────────────────────────────
+
+function buildCandidates(
+  agg: Map<string, { displayName: string; uses: number; prices: number[]; kinds: string[] }>,
+  pricebookNames: Set<string>,
+  stateNames: Set<string>,
+): Candidate[] {
+  const out: Candidate[] = [];
+  for (const [key, data] of agg) {
+    if (data.uses < MIN_USES) continue;
+    if (pricebookNames.has(key)) continue;
+    if (stateNames.has(key)) continue;
+
+    const modalPrice = modalValue(data.prices) / 100;
+
+    // Modal kind: most common; ties → 'labor'
+    const kindCounts = new Map<string, number>();
+    for (const k of data.kinds) kindCounts.set(k, (kindCounts.get(k) ?? 0) + 1);
+    let kind = 'labor';
+    let bestKindCount = 0;
+    for (const [k, c] of kindCounts) {
+      if (c > bestKindCount || (c === bestKindCount && k < kind)) { kind = k; bestKindCount = c; }
+    }
+
+    out.push({ displayName: data.displayName, uses: data.uses, modalPrice, kind });
+  }
+  return out.sort((a, b) => b.uses - a.uses);
+}
+
+function printTable(candidates: Candidate[]): void {
+  const nameW = Math.max(4, ...candidates.map(c => c.displayName.length));
+  const header = ` #  ${'Name'.padEnd(nameW)}  Uses  Modal $    Kind`;
+  console.log('\n' + header);
+  console.log('-'.repeat(header.length));
+  candidates.forEach((c, i) => {
+    const num = String(i + 1).padStart(2);
+    const price = ('$' + c.modalPrice.toFixed(2)).padStart(9);
+    console.log(` ${num}  ${c.displayName.padEnd(nameW)}  ${String(c.uses).padStart(4)}  ${price}  ${c.kind}`);
+  });
+}
+
+// ── Main ───────────────────────────────────────────────────────────────────
 
 async function run() {
-  throw new Error('Not implemented yet');
+  console.log('Loading pricebook and state...');
+  const [pricebookNames, stateNames] = await Promise.all([loadPricebookNames(), loadStateNames()]);
+  console.log(`  Pricebook: ${pricebookNames.size} items | Already promoted: ${stateNames.size}`);
+
+  console.log('\nFetching jobs...');
+  const jobs = await fetchAllJobs();
+
+  console.log('\nFetching line items...');
+  let done = 0;
+  const lineItemsList = await pMap(jobs, async job => {
+    const items = await fetchLineItems(job.id);
+    done++;
+    process.stdout.write(`\r  ${done}/${jobs.length}`);
+    return { id: job.id, items };
+  }, CONCURRENCY);
+  console.log();
+
+  const lineItemsByJob = new Map(lineItemsList.map(e => [e.id, e.items]));
+  const agg = aggregateCandidates(jobs, lineItemsByJob);
+  const candidates = buildCandidates(agg, pricebookNames, stateNames);
+
+  if (candidates.length === 0) {
+    console.log('\nNothing new to add — all recurring custom items are already in the pricebook.');
+    return;
+  }
+
+  console.log(`\nMining complete. Found ${candidates.length} candidate(s):`);
+  printTable(candidates);
+
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  const answer = await rl.question(`\nAdd all ${candidates.length} items to pricebook? [y/N] `);
+  rl.close();
+
+  if (answer.trim().toLowerCase() !== 'y') {
+    console.log('Aborted — nothing added.');
+    return;
+  }
+
+  const promoted: Array<{ name: string; uuid: string }> = [];
+  for (const c of candidates) {
+    try {
+      const item = await createPriceBookItem({
+        name: c.displayName,
+        unitPrice: c.modalPrice,
+        unitCost: 0,
+        unitOfMeasure: 'Each',
+        category: 'Custom',
+      });
+      promoted.push({ name: c.displayName, uuid: item.uuid });
+      console.log(`  ✓ ${c.displayName} → ${item.uuid}`);
+    } catch (e) {
+      console.error(`  ✗ ${c.displayName}: ${(e as Error).message}`);
+    }
+  }
+
+  await appendToState(promoted);
+  console.log(`\nDone. ${promoted.length}/${candidates.length} items added.`);
+  if (promoted.length < candidates.length) {
+    console.log(`${candidates.length - promoted.length} failed — see errors above.`);
+  }
 }
 
 const isMain = /mine-pricebook-candidates\.(ts|js)$/.test(process.argv[1] ?? '');
-if (isMain) run().catch(err => { console.error(err.message); process.exit(1); });
+if (isMain) run().catch(err => { console.error('\nFailed:', err.message); process.exit(1); });
