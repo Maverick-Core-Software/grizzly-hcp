@@ -161,14 +161,14 @@ const server = http.createServer(async (req, res) => {
     setImmediate(async () => {
       try {
         const payload = JSON.parse(estimateMatch[1]) as Record<string, unknown>;
-        payload.customerPhone = payload.customerPhone || fromPhone;
+        payload.customerPhone = fromPhone;
 
         if (payload.siteWalk) {
-          delete payload.scope;
-          payload.lineItems = [
-            { name: 'Initial Site Assessment', quantity: 1, unitPrice: 125, type: 'labor' },
-            { name: 'Site Assessment Waiver', quantity: 1, unitPrice: 125, type: 'fixed discount' },
-          ];
+          // ponytail: from-chat.ts only accepts { scope, customerName, customerEmail, customerPhone }.
+          // Set a specific scope string so the pipeline can match against pricebook items.
+          // HCP pricebook must have: "Site Assessment" ($125 labor) + "Site Assessment Waiver" ($125 discount).
+          payload.scope = 'Initial site assessment visit with site assessment fee waiver';
+          delete payload.lineItems;
         }
 
         const est = await spawnPipeline(payload);
