@@ -19,7 +19,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const STATE_PATH = path.resolve(__dirname, '../../data/promoted-items.json');
 const CONCURRENCY = 5;
 const MIN_USES = 2;
-const RAG_DEDUP_THRESHOLD = 0.85;
+const RAG_DEDUP_THRESHOLD = 0.80;
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
