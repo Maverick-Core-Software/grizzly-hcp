@@ -416,6 +416,10 @@ async function handleEstimateApproval(estimateUuid: string): Promise<void> {
     console.log(`[approval] Estimate ${estimateUuid} not from customer chat — skipping SMS`);
     return;
   }
+  if (!process.env.TWILIO_PHONE_NUMBER) {
+    console.error('[approval] TWILIO_PHONE_NUMBER not set — skipping SMS');
+    return;
+  }
   console.log(`[approval] Sending follow-up SMS to ${phone} for estimate ${estimateUuid}`);
   const client = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
   await client.messages.create({
