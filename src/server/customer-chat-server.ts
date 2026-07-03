@@ -161,6 +161,7 @@ async function handleEmployee(fromPhone: string, messageBody: string): Promise<v
     const visibleReply = agentReply.replace(ESTIMATE_READY_RE, '').trim();
     const sendText = visibleReply || 'Building the estimate now ⚡';
     session.history.push({ role: 'assistant', content: sendText });
+    if (session.history.length > MAX_HISTORY) session.history.splice(0, session.history.length - MAX_HISTORY);
 
     await sendSms(fromPhone, sendText, EMPLOYEE_PHONE_NUMBER).catch(e =>
       console.error('[employee] SMS error:', e),
@@ -266,7 +267,7 @@ const server = http.createServer(async (req, res) => {
 
   setImmediate(async () => {
     const toPhone = params.To ?? '';
-    if (toPhone === EMPLOYEE_PHONE_NUMBER && EMPLOYEE_PHONE_NUMBER) {
+    if (EMPLOYEE_PHONE_NUMBER && toPhone === EMPLOYEE_PHONE_NUMBER) {
       await handleEmployee(fromPhone, messageBody);
       return;
     }
@@ -296,6 +297,7 @@ const server = http.createServer(async (req, res) => {
       const visibleReply = agentReply.replace(ESTIMATE_READY_RE, '').trim();
       const sendText = visibleReply || 'Building your estimate now ⚡';
       session.history.push({ role: 'assistant', content: sendText });
+      if (session.history.length > MAX_HISTORY) session.history.splice(0, session.history.length - MAX_HISTORY);
 
       await sendSms(fromPhone, sendText).catch(e => console.error('[customer] SMS error:', e));
 
