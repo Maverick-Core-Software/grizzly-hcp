@@ -215,6 +215,53 @@ export async function setDeposit(
 
 // ─── Send ─────────────────────────────────────────────────────────────────────
 
+/** Send an estimate to the customer via HCP text + email. Phone is required to SMS; email is optional. */
+export async function sendEstimate(
+  estimateUuid: string,
+  opts: { phone?: string; email?: string; customerName?: string } = {}
+): Promise<void> {
+  const sends: Promise<unknown>[] = [];
+
+  if (opts.phone) {
+    sends.push(hcpPost(`/api/v2/pro/requests/text_estimate`, {
+      request_uuid: estimateUuid,
+      request_uuids: [estimateUuid],
+      checklist_ids: [],
+      custom_sms_message: 'Your estimate from Grizzly Electrical Solutions',
+      phone_number: opts.phone,
+      estimate_plus: true,
+    }));
+  }
+
+  if (opts.email) {
+    const name = opts.customerName ?? 'there';
+    sends.push(hcpPost(`/api/v2/pro/requests/email_estimate`, {
+      attachment_ids: [],
+      request_uuid: estimateUuid,
+      request_uuids: [estimateUuid],
+      checklist_ids: [],
+      email: opts.email,
+      custom_email_subject: 'Your estimate from Grizzly Electrical Solutions',
+      custom_message: `Hi ${name},\n\nThank you for reaching out to Grizzly Electrical Solutions! Please see your estimate attached. You can approve or decline directly from the link. Once approved, we'll reach out to get you on the schedule.\n\nQuestions? Call or text us at (469) 863-9804.`,
+      estimate_plus: true,
+    }));
+  }
+
+  await Promise.all(sends);
+}
+
+/** Write conversation transcript to the estimate's notes (visible to Carter + Jaime in HCP). */
+export async function updateEstimateNotes(
+  estimateUuid: string,
+  notes: string
+): Promise<void> {
+  await hcpPost(`/api/estimates/${estimateUuid}/notes`, {
+    estimate_uuid: estimateUuid,
+    content: notes,
+    expand: ['updated_by'],
+  });
+}
+
 export async function emailEstimate(opts: {
   primaryEstimateUuid: string;
   allEstimateUuids: string[];

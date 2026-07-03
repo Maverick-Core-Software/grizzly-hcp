@@ -11,10 +11,12 @@
  */
 import 'dotenv/config';
 import fs from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { spawn } from 'node:child_process';
+import twilio from 'twilio';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // src/automations/estimates → repo root. Spawns and state files are anchored here
@@ -379,14 +381,69 @@ function spawnFromEmail(payload: FromEmailPayload): Promise<any> {
   });
 }
 
+// ── Approval monitoring helpers ───────────────────────────────────────────────
+
+const HCP_ESTIMATE_UUID_RE = /housecallpro\.com\/app\/estimates\/([a-f0-9-]{36})/i;
+
+function extractApprovalUuid(email: Email): string | null {
+  const subjectLower = (email.subject ?? '').toLowerCase();
+  const isApproval =
+    (subjectLower.includes('approved') || subjectLower.includes('signed')) &&
+    subjectLower.includes('estimate');
+  if (!isApproval) return null;
+  const body = email.body_text || email.body_html || email.snippet || '';
+  const match = body.match(HCP_ESTIMATE_UUID_RE);
+  return match?.[1] ?? null;
+}
+
+function lookupCustomerPhone(estimateUuid: string): string | null {
+  try {
+    const file = path.join(REPO_ROOT, 'data/customer-sessions.jsonl');
+    const lines = readFileSync(file, 'utf-8').trim().split('\n').filter(Boolean);
+    for (const line of [...lines].reverse()) {
+      try {
+        const entry = JSON.parse(line);
+        if (entry.estimateUuid === estimateUuid) return entry.phone;
+      } catch { /* skip malformed */ }
+    }
+  } catch { /* file doesn't exist yet */ }
+  return null;
+}
+
+async function handleEstimateApproval(estimateUuid: string): Promise<void> {
+  const phone = lookupCustomerPhone(estimateUuid);
+  if (!phone) {
+    console.log(`[approval] Estimate ${estimateUuid} not from customer chat — skipping SMS`);
+    return;
+  }
+  if (!process.env.TWILIO_PHONE_NUMBER) {
+    console.error('[approval] TWILIO_PHONE_NUMBER not set — skipping SMS');
+    return;
+  }
+  console.log(`[approval] Sending follow-up SMS to ${phone} for estimate ${estimateUuid}`);
+  const client = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
+  await client.messages.create({
+    from: process.env.TWILIO_PHONE_NUMBER!,
+    to: phone,
+    body: "Great news — your estimate is approved! 🎉 One quick question to help us finalize pricing before we head out: do you know how old your electrical panel is, or when it was last updated?",
+  });
+}
+
 // ── Process a single email ────────────────────────────────────────────────────
 
 async function processEmail(account: string, email: Email): Promise<void> {
   const label = `[${account}] "${email.subject}" from ${email.from}`;
   console.log(`\n${label}`);
 
-  // Hard deny-list: Housecall Pro / CRM notifications never become estimates.
+  // Hard deny-list: HCP / CRM notifications never become estimate requests.
+  // Exception: approval notifications trigger a follow-up SMS to the customer.
   if (isIgnoredSender(email.from)) {
+    const approvalUuid = extractApprovalUuid(email);
+    if (approvalUuid) {
+      await handleEstimateApproval(approvalUuid).catch(
+        e => console.error(`[approval] SMS failed: ${e instanceof Error ? e.message : e}`)
+      );
+    }
     console.log('  → skip (Housecall Pro / automated notification)');
     return;
   }

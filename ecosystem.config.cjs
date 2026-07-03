@@ -30,6 +30,29 @@ module.exports = {
       windowsHide: true,
     },
     {
+      name: 'customer-chat-server',
+      script: 'node_modules/tsx/dist/cli.mjs',
+      args: 'src/server/customer-chat-server.ts',
+      cwd: __dirname,
+      autorestart: true,
+      max_restarts: 10,
+      restart_delay: 5000,
+      windowsHide: true,
+    },
+    {
+      // Hourly: check Gmail for Twilio A2P approval, smoke-test webhook, alert Slack.
+      // autorestart: false — exits after each check; cron_restart re-runs it hourly.
+      // Deletes itself from the active loop once data/a2p-approval-fired.json exists.
+      name: 'a2p-approval-watcher',
+      script: 'node_modules/tsx/dist/cli.mjs',
+      args: 'src/automations/a2p-approval-watcher.ts',
+      cwd: __dirname,
+      cron_restart: '13 * * * *',
+      autorestart: false,
+      watch: false,
+      windowsHide: true,
+    },
+    {
       // Weekly job: pull all HCP estimates with full line items → re-index in RAG.
       // Runs every Sunday at 2 AM so fresh data is ready for Monday.
       // Complements the Gemini CSV auto-download pipeline (jobs/customers/pricebook).
