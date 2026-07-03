@@ -4,6 +4,7 @@ dist/
 data/*.csv
 data/*.json
 data/*.jsonl
+!data/employee-phones.json
 test-fixtures/
 auth/
 proposals/
