@@ -3,8 +3,8 @@ dist/
 .env
 data/*.csv
 data/*.json
+!data/employee-phones.json  # keep the employee allowlist in version control
 data/*.jsonl
-!data/employee-phones.json
 test-fixtures/
 auth/
 proposals/
