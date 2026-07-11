@@ -40,6 +40,26 @@ module.exports = {
       windowsHide: true,
     },
     {
+      name: 'voice-server',
+      script: 'node_modules/tsx/dist/cli.mjs',
+      args: 'src/agent/voice-server.ts',
+      cwd: __dirname,
+      autorestart: true,
+      max_restarts: 10,
+      restart_delay: 5000,
+      windowsHide: true,
+    },
+    {
+      name: 'booking-approval-poller',
+      script: 'node_modules/tsx/dist/cli.mjs',
+      args: 'src/automations/bookings/approval-poller.ts',
+      cwd: __dirname,
+      autorestart: true,
+      max_restarts: 10,
+      restart_delay: 5000,
+      windowsHide: true,
+    },
+    {
       // Weekly job: pull all HCP estimates with full line items → re-index in RAG.
       // Runs every Sunday at 2 AM so fresh data is ready for Monday.
       // Complements the Gemini CSV auto-download pipeline (jobs/customers/pricebook).
