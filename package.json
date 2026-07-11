@@ -29,7 +29,8 @@
     "run": "tsx src/automations/jobs/list-jobs.ts",
     "sync-aliases": "tsx scripts/sync-aliases.ts",
     "test-mav": "tsx scripts/test-mav-memory.ts",
-    "mine-pricebook": "tsx src/hcp/mine-pricebook-candidates.ts"
+    "mine-pricebook": "tsx src/hcp/mine-pricebook-candidates.ts",
+    "list-employees": "tsx scripts/list-employees.ts"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.85",
