@@ -1,11 +1,14 @@
 /**
  * Voice pipeline — spawned by voice-server.ts with JSON on stdin:
- *   { kind: "booking" | "message", payload: {...}, callerPhone, callSid }
+ *   { kind: "booking" | "message" | "reschedule", payload: {...}, callerPhone, callSid }
  *
- * booking → HCP: find/create customer → create estimate shell → booking-request note
- *           → assign Carter + Jaime (notify_pro push) → append data/pending-bookings.jsonl
- *           (the approval-poller then watches that estimate's notes for a SCHEDULE reply)
- * message → same customer/estimate/note/assign chain, but marked delivered immediately.
+ * booking    → HCP: find/create customer → create estimate shell → booking-request note
+ *              → assign Carter + Jaime (notify_pro push) → append data/pending-bookings.jsonl
+ *              (the approval-poller then watches that estimate's notes for a SCHEDULE reply)
+ * message    → same customer/estimate/note/assign chain, but marked delivered immediately.
+ * reschedule → same chain; the note carries the HCP job id + new preferred windows.
+ *              status "reschedule_pending" so the approval-poller (which only acts on
+ *              status "pending") ignores it — the office moves the job in HCP manually.
  *
  * Writes go through gateway.ts (direct client or MCP daemon per HCP_VIA_MCP), matching
  * the from-chat.ts estimate pipeline. updateEstimateNotes is direct-client only.
@@ -26,10 +29,13 @@ interface BookingPayload {
   // message kind:
   callerName?: string;
   message?: string;
+  // reschedule kind:
+  jobId?: string;
+  currentTime?: string;
 }
 
 interface PipelineInput {
-  kind: 'booking' | 'message';
+  kind: 'booking' | 'message' | 'reschedule';
   payload: BookingPayload;
   callerPhone?: string;
   callSid?: string;
@@ -59,6 +65,52 @@ const proUuids = [process.env.CARTER_PRO_UUID, process.env.JAIME_PRO_UUID].filte
   (u): u is string => Boolean(u)
 );
 
+function buildNote(kind: PipelineInput['kind'], now: string): string {
+  if (kind === 'booking') {
+    return [
+      '📞 MAVERICK BOOKING REQUEST — from phone call',
+      `Received: ${now} (Central)`,
+      `Caller: ${name}`,
+      `Callback: ${phone || 'unknown'}`,
+      `Address: ${p.address ?? 'not given'}`,
+      `Issue: ${p.issue ?? 'not given'}`,
+      `Preferred times: ${(p.preferredWindows ?? []).join('  |  ') || 'not given'}`,
+      '',
+      'TO APPROVE: add a note to this estimate starting with SCHEDULE, e.g.',
+      'SCHEDULE 07/14 2:00 pm - 4:00 pm',
+      'Maverick will book it and HCP will notify the customer.',
+    ].join('\n');
+  }
+  if (kind === 'reschedule') {
+    return [
+      '📞 MAVERICK RESCHEDULE REQUEST — from phone call',
+      `Received: ${now} (Central)`,
+      `Caller: ${name}`,
+      `Callback: ${phone || 'unknown'}`,
+      `HCP job: ${p.jobId || 'unknown'}`,
+      `Currently scheduled: ${p.currentTime || 'unknown'}`,
+      `New preferred times: ${(p.preferredWindows ?? []).join('  |  ') || 'not given'}`,
+      '',
+      'TO HANDLE: move the job in HCP to one of the preferred times — HCP will',
+      'notify the customer. This estimate shell exists only to carry this note.',
+    ].join('\n');
+  }
+  return [
+    '📞 MAVERICK PHONE MESSAGE',
+    `Received: ${now} (Central)`,
+    `Caller: ${name}`,
+    `Callback: ${phone || 'unknown'}`,
+    '',
+    `Message: ${p.message ?? ''}`,
+  ].join('\n');
+}
+
+const STATUS_BY_KIND: Record<PipelineInput['kind'], string> = {
+  booking: 'pending',
+  message: 'message_delivered',
+  reschedule: 'reschedule_pending',
+};
+
 try {
   // 1. Find or create the customer.
   let customer = await searchCustomer(name);
@@ -75,30 +127,7 @@ try {
 
   // 3. Post the note Carter + Jaime read in the HCP app.
   const now = new Date().toLocaleString('en-US', { timeZone: 'America/Chicago' });
-  const note =
-    input.kind === 'booking'
-      ? [
-          '📞 MAVERICK BOOKING REQUEST — from phone call',
-          `Received: ${now} (Central)`,
-          `Caller: ${name}`,
-          `Callback: ${phone || 'unknown'}`,
-          `Address: ${p.address ?? 'not given'}`,
-          `Issue: ${p.issue ?? 'not given'}`,
-          `Preferred times: ${(p.preferredWindows ?? []).join('  |  ') || 'not given'}`,
-          '',
-          'TO APPROVE: add a note to this estimate starting with SCHEDULE, e.g.',
-          'SCHEDULE 07/14 2:00 pm - 4:00 pm',
-          'Maverick will book it and HCP will notify the customer.',
-        ].join('\n')
-      : [
-          '📞 MAVERICK PHONE MESSAGE',
-          `Received: ${now} (Central)`,
-          `Caller: ${name}`,
-          `Callback: ${phone || 'unknown'}`,
-          '',
-          `Message: ${p.message ?? ''}`,
-        ].join('\n');
-  await updateEstimateNotes(estimate.uuid, note);
+  await updateEstimateNotes(estimate.uuid, buildNote(input.kind, now));
 
   // 4. Assign Carter + Jaime → notify_pro:true fires their HCP push notification.
   if (proUuids.length > 0) {
@@ -108,7 +137,7 @@ try {
     console.error('[from-voice] WARNING: no CARTER_PRO_UUID/JAIME_PRO_UUID set — nobody was notified');
   }
 
-  // 5. Track for the approval poller.
+  // 5. Track for the approval poller (booking) / the record (message, reschedule).
   appendPending({
     estimateUuid: estimate.uuid,
     estimateId: estimate.estimateId,
@@ -117,8 +146,10 @@ try {
     callbackPhone: phone,
     address: p.address ?? '',
     issue: p.issue ?? p.message ?? '',
+    jobId: p.jobId ?? '',
+    currentTime: p.currentTime ?? '',
     preferredWindows: p.preferredWindows ?? [],
-    status: input.kind === 'booking' ? 'pending' : 'message_delivered',
+    status: STATUS_BY_KIND[input.kind] ?? 'pending',
     createdAt: new Date().toISOString(),
     callSid: input.callSid ?? '',
   });
@@ -133,6 +164,8 @@ try {
     callbackPhone: phone,
     address: p.address ?? '',
     issue: p.issue ?? p.message ?? '',
+    jobId: p.jobId ?? '',
+    currentTime: p.currentTime ?? '',
     preferredWindows: p.preferredWindows ?? [],
     status: 'failed_needs_manual',
     error: e instanceof Error ? e.message : String(e),
