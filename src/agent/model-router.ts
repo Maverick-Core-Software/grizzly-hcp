@@ -45,13 +45,31 @@ export function getModel(role: ModelRole): LanguageModelV3 {
     return createAnthropic({ baseURL: ANTHROPIC_BASE_URL, apiKey: key })(modelId);
   }
 
+  // DeepSeek (OpenAI-compatible, chat completions only). First-class instead of
+  // overloading ZAI_* vars: a user-scope ZAI_API_KEY shadows .env (dotenv never
+  // overrides existing process env), which silently sent the wrong key.
+  if (modelId.startsWith('deepseek-')) {
+    const key = process.env.DEEPSEEK_API_KEY;
+    if (!key) throw new Error('DEEPSEEK_API_KEY is not set (required for deepseek-* models)');
+    const dsBase = (process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com').replace(/\/$/, '');
+    return createOpenAI({
+      baseURL: dsBase.endsWith('/v1') ? dsBase : `${dsBase}/v1`,
+      apiKey: key,
+    }).chat(modelId) as unknown as LanguageModelV3;
+  }
+
   // Default: z.ai (OpenAI-compatible). Same base URL + key for text and vision;
   // only the model ID differs. Optional gateway override via MAVERICK_OPENAI_BASE_URL.
   if (!ZAI_API_KEY) throw new Error('ZAI_API_KEY is not set (required for z.ai GLM routing)');
   const gatewayBase = process.env.MAVERICK_OPENAI_BASE_URL;
   const base = (gatewayBase || ZAI_BASE_URL).replace(/\/$/, '');
+  // OPENAI_API_KEY is a gateway credential — honoring it without a gateway lets the
+  // user-scope Windows env var silently replace the provider key (broke voice smoke test).
+  const apiKey = gatewayBase ? (process.env.OPENAI_API_KEY || ZAI_API_KEY) : ZAI_API_KEY;
+  // .chat(): DeepSeek/z.ai only implement /chat/completions; the default provider
+  // shape targets OpenAI's /v1/responses endpoint.
   return createOpenAI({
     baseURL: base.endsWith('/v1') ? base : `${base}/v1`,
-    apiKey: process.env.OPENAI_API_KEY || ZAI_API_KEY,
-  })(modelId) as unknown as LanguageModelV3;
+    apiKey,
+  }).chat(modelId) as unknown as LanguageModelV3;
 }
