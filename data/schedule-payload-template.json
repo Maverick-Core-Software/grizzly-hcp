@@ -1,0 +1,3 @@
+{
+  "_UNCAPTURED": "Replace this file's contents with the request body captured from `npm run intercept` while manually scheduling one job in HCP (Manual Ops Checklist item 1). Then replace the concrete start time with %START_ISO%, the end time with %END_ISO%, and the assigned-employee uuid array with \"%PRO_UUIDS%\" (quoted token)."
+}
