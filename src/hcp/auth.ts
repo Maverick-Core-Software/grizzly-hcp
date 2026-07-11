@@ -11,7 +11,7 @@ import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const COOKIES_FILE = path.resolve(__dirname, '../../auth/hcp-cookies.json');
-const SESSION_DIR   = path.resolve(__dirname, '../../auth/hcp-session');
+export const SESSION_DIR = path.resolve(__dirname, '../../auth/hcp-session');
 const BASE = 'https://pro.housecallpro.com';
 
 /**

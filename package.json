@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "login": "tsx src/hcp/auth.ts",
+    "relogin": "tsx scripts/hcp-relogin.ts",
     "estimate": "tsx src/automations/estimates/from-proposal.ts",
     "templates": "tsx src/hcp/list-templates.ts",
     "export-pricebook": "tsx src/hcp/export-pricebook.ts",
