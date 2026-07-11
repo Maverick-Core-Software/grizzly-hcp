@@ -124,31 +124,33 @@ export async function lookupMyAppointments(input: VoiceLookupInput) {
       return { verified: false, reason: 'No customer record matched. Offer to take a message instead.' };
     }
 
-    // Upcoming jobs: pull the schedule, keep ONLY this customer's jobs.
-    // ponytail: schema-agnostic containment filter on the customer id — replace with
-    // a field-level filter once the scheduled-jobs payload shape is pinned down.
-    const sched = await hcpGet<{ jobs?: unknown[] }>('/pro/jobs/scheduled?days_ahead=30&limit=100');
+    // Upcoming scheduled jobs scoped to this customer via the /alpha/ JSON API.
+    // /pro/jobs/scheduled returns HTML (SPA route); /alpha/jobs?customer_id= returns JSON.
     const custId = customer.id;
-    const appointments = (sched.jobs ?? [])
-      .filter((j) => JSON.stringify(j).includes(custId))
-      .slice(0, 5)
-      .map((j) => ({
-        jobId: pluck(j, ['uuid', 'id']),
-        scheduledFor: pluck(j, ['scheduled_start', 'start_time', 'scheduled_start_time', 'start']),
-        description: pluck(j, ['description', 'name', 'work_status']),
-        address: pluck(j, ['street', 'address', 'display_address']),
-      }));
-
-    const est = await hcpGet<{ estimates?: unknown[] }>(
-      `/pro/estimates?customer_id=${encodeURIComponent(custId)}&limit=10`
+    interface AlphaJob {
+      id?: string;
+      description?: string;
+      name?: string;
+      printable_address?: string;
+      schedule?: { data?: { start_time?: string; end_time?: string; time_zone?: string } };
+    }
+    interface AlphaJobsResponse { data?: { data?: AlphaJob[] } }
+    const jobsRes = await hcpGet<AlphaJobsResponse>(
+      `/alpha/jobs?customer_id=${encodeURIComponent(custId)}&work_status=scheduled&page=1&page_size=10`
     );
-    const estimates = (est.estimates ?? []).slice(0, 5).map((e) => ({
-      estimateId: pluck(e, ['uuid', 'id', 'estimate_number']),
-      status: pluck(e, ['work_status', 'status', 'state']),
-      description: pluck(e, ['description', 'name']),
+    const appointments = (jobsRes.data?.data ?? []).slice(0, 5).map((j) => ({
+      jobId: j.id ?? '',
+      scheduledFor: j.schedule?.data?.start_time ?? '',
+      scheduledEnd: j.schedule?.data?.end_time ?? '',
+      timeZone: j.schedule?.data?.time_zone ?? 'America/Chicago',
+      description: j.description ?? j.name ?? '',
+      address: j.printable_address ?? '',
     }));
 
-    return { verified: true, verifiedBy, customerName: customer.display_name, appointments, estimates };
+    // ponytail: /pro/estimates and /alpha/estimates both return HTML or 404 with cookie auth.
+    // Estimates omitted until HCP exposes a JSON endpoint for them.
+
+    return { verified: true, verifiedBy, customerName: customer.display_name, appointments };
   } catch (e) {
     return { verified: false, error: e instanceof Error ? e.message : String(e) };
   }
@@ -157,7 +159,7 @@ export async function lookupMyAppointments(input: VoiceLookupInput) {
 export const lookupMyAppointmentsTool = createTool({
   id: 'lookup_my_appointments',
   description:
-    "Look up the CALLER'S OWN upcoming appointments and open estimates, live from Housecall Pro. Identity check is built in: pass the caller-ID phone plus the name the caller gave. If that does not verify, ask for their full name and service address and call again with both. Never returns other customers' records.",
+    "Look up the CALLER'S OWN upcoming scheduled appointments, live from Housecall Pro. Identity check is built in: pass the caller-ID phone plus the name the caller gave. If that does not verify, ask for their full name and service address and call again with both. Never returns other customers' records.",
   inputSchema: z.object({
     callerPhone: z.string().optional().describe('Caller phone number from caller ID'),
     name: z.string().describe('Full name the caller gave'),
