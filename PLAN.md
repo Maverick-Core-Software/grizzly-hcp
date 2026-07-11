@@ -93,7 +93,7 @@ Emergency: agent asks the caller's city, emits [TRANSFER]{"target":"jaime"|"cart
 | 1 | 1–3 | Dependencies, env, HCP MCP wrappers, employee lookup |
 | 2 | 4–5 | Voice persona + full voice server |
 | 3 | 6–8 | Schedule payload template, booking pipeline, approval poller |
-| 4 | 9–10 | PM2 wiring, local end-to-end smoke test |
+| 4 | 9–11 | PM2 wiring, local end-to-end smoke test, ElevenLabs TTS switch |
 
 Manual Ops Checklist (Carter, no Qwen) is at the bottom.
 
@@ -1312,6 +1312,88 @@ git add scripts/test-voice-local.ts && git commit -m "test(voice): local Convers
 
 ---
 
+## Task 11 — ElevenLabs TTS via env-configurable ConversationRelay attributes
+
+Why: ConversationRelay natively supports Google, Amazon Polly, and ElevenLabs TTS. ElevenLabs is
+the quality upgrade and is a TwiML-attribute change only. Make the provider/voice env-driven so
+Carter can swap or roll back by editing `.env` and restarting — no code changes.
+
+**Step 1.** Append the TTS config block to `.env`. Do NOT open or rewrite `.env` — append only,
+exactly this command:
+
+```bash
+printf '\n# ─── Voice TTS (ConversationRelay) ───\nVOICE_TTS_PROVIDER=ElevenLabs\nVOICE_TTS_VOICE=\n' >> .env
+```
+
+**Step 2.** Verify:
+
+```bash
+tail -n 3 .env
+```
+
+Expected output: the comment line, `VOICE_TTS_PROVIDER=ElevenLabs`, and `VOICE_TTS_VOICE=` (empty).
+
+**Step 3.** In `src/agent/voice-server.ts`, find this exact line (from Task 5):
+
+```ts
+const JAIME_PHONE = process.env.JAIME_PHONE ?? '';
+```
+
+and replace it with:
+
+```ts
+const JAIME_PHONE = process.env.JAIME_PHONE ?? '';
+// ponytail: TTS is env-swappable, not per-call configurable — flip .env, restart, done.
+// Empty VOICE_TTS_VOICE omits the attribute so Twilio uses the provider's default voice.
+const TTS_PROVIDER = process.env.VOICE_TTS_PROVIDER ?? '';
+const TTS_VOICE = process.env.VOICE_TTS_VOICE ?? 'Polly.Joanna-Neural';
+```
+
+**Step 4.** In the same file, find this exact block inside the `POST /twiml` handler (from Task 5):
+
+```ts
+    const wsUrl = PUBLIC_URL.replace(/^http/, 'ws') + '/ws';
+    sendXml(res, `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Connect action="${xmlEscape(PUBLIC_URL + '/handoff')}">
+    <ConversationRelay url="${xmlEscape(wsUrl)}" welcomeGreeting="${xmlEscape(GREETING)}" voice="Polly.Joanna-Neural" dtmfDetection="true" />
+  </Connect>
+</Response>`);
+```
+
+and replace it with:
+
+```ts
+    const wsUrl = PUBLIC_URL.replace(/^http/, 'ws') + '/ws';
+    const ttsAttrs =
+      (TTS_PROVIDER ? ` ttsProvider="${xmlEscape(TTS_PROVIDER)}"` : '') +
+      (TTS_VOICE ? ` voice="${xmlEscape(TTS_VOICE)}"` : '');
+    sendXml(res, `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Connect action="${xmlEscape(PUBLIC_URL + '/handoff')}">
+    <ConversationRelay url="${xmlEscape(wsUrl)}" welcomeGreeting="${xmlEscape(GREETING)}"${ttsAttrs} dtmfDetection="true" />
+  </Connect>
+</Response>`);
+```
+
+**Step 5.** Verify the served TwiML (starts the server, curls /twiml, kills the server):
+
+```bash
+npx tsx src/agent/voice-server.ts & SERVER_PID=$!; sleep 8; curl -s -X POST http://localhost:8765/twiml; echo; kill $SERVER_PID
+```
+
+Expected output: a `<Response>` TwiML document whose `<ConversationRelay ...>` element contains
+`ttsProvider="ElevenLabs"` and does NOT contain a `voice=` attribute (VOICE_TTS_VOICE is empty,
+so Twilio uses its default ElevenLabs voice).
+
+**Step 6.** Commit (`.env` is gitignored — only the server file changes):
+
+```bash
+git add src/agent/voice-server.ts && git commit -m "feat(voice): env-configurable ConversationRelay TTS provider/voice, default ElevenLabs"
+```
+
+---
+
 # Manual Ops Checklist (Carter — after Session 4)
 
 1. **Capture the schedule payload (required before any booking can be auto-scheduled).**
@@ -1339,13 +1421,20 @@ git add scripts/test-voice-local.ts && git commit -m "test(voice): local Convers
 7. **Live test call.** Call the Twilio number: ask a question, then do a fake booking. Confirm the
    HCP push notification arrives and the estimate + note appear. Add a `SCHEDULE 07/15 2:00 pm - 4:00 pm`
    note and confirm the poller schedules it within a minute (after item 1 is done).
+8. **Pick the ElevenLabs voice (optional — a good default already plays).** Task 11 ships with
+   `VOICE_TTS_PROVIDER=ElevenLabs` and an empty `VOICE_TTS_VOICE`, which means Twilio's default
+   ElevenLabs voice. To choose your own: audition in the Twilio ConversationRelay docs' searchable
+   voice list (or ElevenLabs' voice library / their free HuggingFace demo), then set
+   `VOICE_TTS_VOICE=<VoiceID>-1.0_0.5_0.8` in `.env` (format `[VoiceID]-[Speed]_[Stability]_[Similarity]`,
+   Speed 0.7–1.2, Stability/Similarity 0.0–1.0) and restart voice-server. The item-7 live test call
+   is the real audition — it's the only way to hear it over an actual 8kHz phone line.
+   Rollback to the old voice: set `VOICE_TTS_PROVIDER=` (empty) and `VOICE_TTS_VOICE=Polly.Joanna-Neural`, restart.
 
 ## Known deferred items (do NOT build now)
 
 - Twilio SMS alerts/approvals for Carter + Jaime — blocked on A2P campaign approval; the HCP
   note loop is the interim. When A2P clears, add SMS send in from-voice.ts + an SMS reply path.
 - Voicemail recording on failed emergency transfer (currently spoken apology + jsonl log).
-- ElevenLabs voice upgrade (swap the `voice` attribute in /twiml TwiML).
 - ConversationRelay signature validation on /twiml (Twilio signs webhooks; chat server has the
   pattern in customer-chat-server.ts if wanted later).
 
@@ -1447,20 +1536,20 @@ You are executing **Session 4** of a pre-written implementation plan. All design
 
 **Plan file:** `C:\Workspace\Active\grizzly-hcp\PLAN.md`
 **Feature:** Grizzly Voice Agent (Maverick answers the phone)
-**Working Tasks:** Tasks 9 through 10
+**Working Tasks:** Tasks 9 through 11
 **Working Branch:** `feature/voice-agent`
 **Environment:** Windows 11 / Git Bash shell. Forward slashes in paths.
 
 Rules — follow these exactly:
 
 1. **Read the plan's Codebase Primer section first**, in full, before touching anything.
-2. **Execute tasks strictly in order (run Tasks 9 through 10 in this session).** Within each task, execute steps in order.
+2. **Execute tasks strictly in order (run Tasks 9 through 11 in this session).** Within each task, execute steps in order.
 3. **Copy code blocks verbatim.** Do not rename, reformat, "improve", simplify, or add error handling the plan doesn't show. If a code block is labeled a full-file replacement, replace the whole file.
 4. **Every command in the plan has an expected output. Verify it.** If your output matches, continue. If it doesn't, make at most ONE focused attempt to fix the discrepancy (typo-level, not redesign-level). If it still doesn't match, STOP and report: task number, step, exact command, full actual output. Do not creatively work around failures.
 5. **Commit exactly when and what the plan says.** Use the plan's commit messages verbatim.
 6. **Never skip a test step or a verification step**, even if you're confident. The expected-output checks are how we both know you're on track.
 7. **Do not add features, files, dependencies, or refactors the plan doesn't specify.** If something seems missing or wrong in the plan, STOP and report it. Task 9 explicitly forbids running `pm2 start` — do not start any PM2 process.
-8. **DO NOT proceed to tasks beyond Task 10.** The Manual Ops Checklist is for Carter, not you.
+8. **DO NOT proceed to tasks beyond Task 11.** The Manual Ops Checklist is for Carter, not you.
 
 When all tasks for this session are done, reply with:
 - Tasks completed in this session
