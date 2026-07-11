@@ -31,6 +31,10 @@ const PORT = Number(process.env.VOICE_PORT ?? 8765);
 const PUBLIC_URL = (process.env.VOICE_PUBLIC_URL ?? 'https://voice.grizzlyelectrical.net').replace(/\/$/, '');
 const CARTER_PHONE = process.env.CARTER_PHONE ?? '';
 const JAIME_PHONE = process.env.JAIME_PHONE ?? '';
+// ponytail: TTS is env-swappable, not per-call configurable — flip .env, restart, done.
+// Empty VOICE_TTS_VOICE omits the attribute so Twilio uses the provider's default voice.
+const TTS_PROVIDER = process.env.VOICE_TTS_PROVIDER ?? '';
+const TTS_VOICE = process.env.VOICE_TTS_VOICE ?? 'Polly.Joanna-Neural';
 const MAX_HISTORY = 30;
 
 const GREETING = "Thanks for calling Grizzly Electrical! This is Maverick, the automated assistant. How can I help you today?";
@@ -105,10 +109,13 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'POST' && url.pathname === '/twiml') {
     // Twilio Voice webhook → hand the call to ConversationRelay.
     const wsUrl = PUBLIC_URL.replace(/^http/, 'ws') + '/ws';
+    const ttsAttrs =
+      (TTS_PROVIDER ? ` ttsProvider="${xmlEscape(TTS_PROVIDER)}"` : '') +
+      (TTS_VOICE ? ` voice="${xmlEscape(TTS_VOICE)}"` : '');
     sendXml(res, `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Connect action="${xmlEscape(PUBLIC_URL + '/handoff')}">
-    <ConversationRelay url="${xmlEscape(wsUrl)}" welcomeGreeting="${xmlEscape(GREETING)}" voice="Polly.Joanna-Neural" dtmfDetection="true" />
+    <ConversationRelay url="${xmlEscape(wsUrl)}" welcomeGreeting="${xmlEscape(GREETING)}"${ttsAttrs} dtmfDetection="true" />
   </Connect>
 </Response>`);
     return;
