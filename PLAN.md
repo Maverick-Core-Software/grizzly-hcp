@@ -1295,8 +1295,13 @@ ws.on('error', (e) => {
 **Step 2.** Run the end-to-end test (starts the server, waits, tests, kills):
 
 ```bash
-npx tsx src/agent/voice-server.ts & SERVER_PID=$!; sleep 8; npx tsx scripts/test-voice-local.ts; TEST_EXIT=$?; kill $SERVER_PID; echo "test-exit:$TEST_EXIT"
+npx tsx src/agent/voice-server.ts & SERVER_PID=$!; sleep 8; npx tsx scripts/test-voice-local.ts; TEST_EXIT=$?; kill $SERVER_PID; taskkill //F //T //PID $(netstat -ano | grep ':8765' | grep LISTEN | awk '{print $NF}' | head -1); echo "test-exit:$TEST_EXIT"
 ```
+
+(The `taskkill` matters: on Windows Git Bash, `kill $SERVER_PID` kills only the bash wrapper — the
+node child survives and keeps port 8765, which would break Task 11's check. `taskkill //T` kills
+the whole tree by the PID that owns the port. A `SUCCESS: ...terminated` line — or an error if it
+already died — is fine either way.)
 
 Expected output: a line starting `MAVERICK SAYS:` containing a conversational reply about EV
 chargers (a price range, or a follow-up question — either is a pass; it must NOT contain markdown
@@ -1379,8 +1384,11 @@ and replace it with:
 **Step 5.** Verify the served TwiML (starts the server, curls /twiml, kills the server):
 
 ```bash
-npx tsx src/agent/voice-server.ts & SERVER_PID=$!; sleep 8; curl -s -X POST http://localhost:8765/twiml; echo; kill $SERVER_PID
+npx tsx src/agent/voice-server.ts & SERVER_PID=$!; sleep 8; curl -s -X POST http://localhost:8765/twiml; echo; kill $SERVER_PID; taskkill //F //T //PID $(netstat -ano | grep ':8765' | grep LISTEN | awk '{print $NF}' | head -1)
 ```
+
+(`taskkill` reaps the node child that `kill` misses on Windows — same as Task 10 Step 2. If the
+port shows no listener because the server already exited, a taskkill error is fine.)
 
 Expected output: a `<Response>` TwiML document whose `<ConversationRelay ...>` element contains
 `ttsProvider="ElevenLabs"` and does NOT contain a `voice=` attribute (VOICE_TTS_VOICE is empty,
