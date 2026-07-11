@@ -36,4 +36,13 @@ if ($LASTEXITCODE -ne 0) { Log "ERROR: price book export failed"; exit 1 }
 bash scripts/push-pricebook.sh 2>&1 | Tee-Object -Append -FilePath $LogFile
 if ($LASTEXITCODE -ne 0) { Log "ERROR: price book push failed"; exit 1 }
 
+# 4. Re-ingest the Obsidian brain vault into agent-os memory.
+# Non-fatal: a failure here logs a warning but doesn't block the HCP sync above.
+Log "Re-ingesting brain vault into agent-os memory..."
+$AgentOsDir = "C:\Workspace\Infrastructure\agent-os"
+Push-Location $AgentOsDir
+python scripts/ingest-brain-vault.py 2>&1 | Tee-Object -Append -FilePath $LogFile
+if ($LASTEXITCODE -ne 0) { Log "WARN: brain-vault ingest failed (non-fatal)" }
+Pop-Location
+
 Log "=== Sync complete ==="

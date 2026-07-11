@@ -22,7 +22,7 @@ They hit the **same internal HCP API** (e.g. grizzly's `addLineItem` and the MCP
 ## Decisions already made (with the user)
 
 1. **Full retirement** of `src/hcp/*`, not a reads-only consolidation. This requires porting 4 missing write operations into the MCP first.
-2. **Persistent MCP daemon over HTTP** (vs. file-lock-serialized subprocess spawns, or collapsing the pipeline into one process). Rationale: there are **three** independent HCP consumers — `mav-slack`, `watch-email` (+ its spawned children), and the ad-hoc `npm run estimate` CLI — plus a future CodexForge consumer. A daemon is the only model where all of them share one warm, authenticated session; the CLI cannot be collapsed into a single process, and cross-process file locks on Windows are fragile.
+2. **Persistent MCP daemon over HTTP** (vs. file-lock-serialized subprocess spawns, or collapsing the pipeline into one process). Rationale: there are **three** independent HCP consumers — `mav-slack`, `watch-email` (+ its spawned children), and the ad-hoc `npm run estimate` CLI — plus a future MaverickForge consumer. A daemon is the only model where all of them share one warm, authenticated session; the CLI cannot be collapsed into a single process, and cross-process file locks on Windows are fragile.
 
 ---
 
@@ -50,7 +50,7 @@ Exact field maps are taken verbatim from grizzly's `src/hcp/estimates.ts` and `s
    watch-email ───────┤    HTTP (localhost:<port>, bearer token)
      └─ from-email ───┤
    estimate CLI ──────┼──────────────────────────────▶  housecall-pro-mcp DAEMON  (PM2 service)
-   (CodexForge, later)┘                                    │  Streamable HTTP transport
+   (MaverickForge, later)┘                                    │  Streamable HTTP transport
                                                            │  internal request mutex (serial)
                                                            │  ONE Playwright browser session
                                                            ▼
@@ -60,7 +60,7 @@ Exact field maps are taken verbatim from grizzly's `src/hcp/estimates.ts` and `s
 
 - The daemon owns the only browser session. Consumers are thin HTTP MCP clients — no browser, no cookies, no `npm run login`.
 - The MCP serializes tool calls internally, so "the browser page is a serial resource" stops being any consumer's problem.
-- Stdio transport is retained so the MCP still works as a normal MCP-client child (e.g. CodexForge, Claude Desktop) where that's wanted.
+- Stdio transport is retained so the MCP still works as a normal MCP-client child (e.g. MaverickForge, Claude Desktop) where that's wanted.
 
 ---
 
@@ -137,6 +137,6 @@ Each phase is independently revertible by the flag until Phase 4.
 
 ## Out of scope
 
-- Wiring CodexForge to the daemon (future; the daemon makes it possible).
+- Wiring MaverickForge to the daemon (future; the daemon makes it possible).
 - `createMaterialItem` and other unused grizzly operations not on the estimate path.
 - mav-imessage teardown (grizzly's call, tracked elsewhere).

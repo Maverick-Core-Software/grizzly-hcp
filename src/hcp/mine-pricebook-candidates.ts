@@ -10,6 +10,7 @@ import 'dotenv/config';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { execSync } from 'node:child_process';
 import readline from 'node:readline/promises';
 import { hcpGet } from './client.js';
 import { listAllServices, createPriceBookItem } from './price-book.js';
@@ -288,7 +289,17 @@ async function run() {
     }
   }
 
-  if (promoted.length > 0) await appendToState(promoted);
+  if (promoted.length > 0) {
+    await appendToState(promoted);
+    console.log('\nSyncing to RAG...');
+    try {
+      execSync('npm run push-pricebook', { stdio: 'inherit', shell: true });
+      execSync('npm run enrich-rag', { stdio: 'inherit', shell: true });
+    } catch (e) {
+      console.error('  RAG sync failed (non-fatal):', (e as Error).message);
+      console.error('  Run manually: npm run push-pricebook && npm run enrich-rag');
+    }
+  }
   console.log(`\nDone. ${promoted.length}/${candidates.length} items added.`);
   if (promoted.length < candidates.length) {
     console.log(`${candidates.length - promoted.length} failed — see errors above.`);
