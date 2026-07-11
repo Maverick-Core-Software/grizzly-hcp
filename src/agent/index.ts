@@ -12,6 +12,7 @@ import { fileURLToPath } from 'url';
 import { getModel } from './model-router.js';
 import { ragReadTools } from './tools/reads/rag.js';
 import { hcpReadTools } from './tools/reads/hcp.js';
+import { voiceLookupTools } from './tools/reads/voice-lookup.js';
 import { messagingReadTools } from './tools/reads/messaging.js';
 import { homeDepotTools } from './tools/reads/home-depot.js';
 import { resolveTools, resolveInstructions, type Channel } from './resolver.js';
@@ -202,6 +203,7 @@ const allTools = {
   ...messagingReadTools,
   ...homeDepotTools,
   ...memoryWriteTools,
+  ...voiceLookupTools,
 };
 
 export function createMaverickAgent(channel: Channel = 'text') {
