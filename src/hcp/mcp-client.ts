@@ -127,3 +127,28 @@ export async function createPriceBookItem(item: {
   });
   return created;
 }
+
+/**
+ * Voice-agent additions. These three tools exist only on the MCP daemon (no direct-client
+ * equivalent), so consumers import them from this module directly instead of gateway.ts.
+ */
+export async function listEmployees(): Promise<{ count: number; employees: Array<Record<string, unknown>> }> {
+  return callTool<{ count: number; employees: Array<Record<string, unknown>> }>("list_employees", {});
+}
+
+/** Raw HCP notes response for an estimate/job. Shape is not guaranteed — parse defensively. */
+export async function getJobNotes(estimateUuid: string): Promise<unknown> {
+  return callTool<unknown>("get_job_notes", { estimate_id: estimateUuid });
+}
+
+/**
+ * Schedule a job/request. requestId is the NUMERIC estimate/request id as a string
+ * (HcpEstimate.estimateId), NOT the est_... uuid. scheduleData comes from
+ * buildSchedulePayload() — never hand-build it.
+ */
+export async function updateJobSchedule(
+  requestId: string,
+  scheduleData: Record<string, unknown>
+): Promise<unknown> {
+  return callTool<unknown>("update_job_schedule", { request_id: requestId, schedule_data: scheduleData });
+}
