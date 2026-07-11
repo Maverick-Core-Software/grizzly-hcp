@@ -7,6 +7,7 @@ const VOICE_INCLUDED = new Set([
   'search_pricebook',
   'lookup_pricing',
   'search_knowledge',
+  'lookup_my_appointments',
 ]);
 
 // Advisory is an allow-list (not an exclude-list) so any future tool added to the registry
