@@ -15,6 +15,18 @@ const VENICE_API_KEY  = process.env.VENICE_API_KEY || '';
 const VENICE_TEXT_MODEL   = process.env.VENICE_TEXT_MODEL || 'zai-org-glm-5-2';
 const VENICE_VISION_MODEL = process.env.VENICE_VISION_MODEL || 'z-ai-glm-5v-turbo';
 
+// Old direct z.ai routing (pre-Venice) — the fallback speaks z.ai's model names,
+// not Venice's.
+const ZAI_TEXT_MODEL   = process.env.ZAI_MODEL || 'glm-5.2';
+const ZAI_VISION_MODEL = process.env.ZAI_VISION_MODEL || 'glm-5v-turbo';
+
+const FALLBACK_DEFAULTS: Record<ModelRole, string> = {
+  REASONING:  ZAI_TEXT_MODEL,
+  EXTRACTION: ZAI_TEXT_MODEL,
+  VISION:     ZAI_VISION_MODEL,
+  CHEAP:      ZAI_TEXT_MODEL,
+};
+
 const DEFAULTS: Record<ModelRole, string> = {
   REASONING:  VENICE_TEXT_MODEL,
   EXTRACTION: VENICE_TEXT_MODEL,
@@ -29,8 +41,8 @@ const DEFAULTS: Record<ModelRole, string> = {
  * Revert: swap DEFAULTS back to ZAI_TEXT_MODEL / ZAI_VISION_MODEL.
  */
 export function getFallbackModel(role: ModelRole): LanguageModelV3 {
-  const envKey = `MAVERICK_${role}_MODEL` as const;
-  const modelId = process.env[envKey] || DEFAULTS[role];
+  const envKey = `MAVERICK_${role}_FALLBACK_MODEL` as const;
+  const modelId = process.env[envKey] || FALLBACK_DEFAULTS[role];
 
   // Google models
   if (modelId.startsWith('gemini-') || modelId.startsWith('google/')) {
@@ -60,8 +72,10 @@ export function getFallbackModel(role: ModelRole): LanguageModelV3 {
   const gatewayBase = process.env.MAVERICK_OPENAI_BASE_URL;
   const base = (gatewayBase || ZAI_BASE_URL).replace(/\/$/, '');
   const apiKey = gatewayBase ? (process.env.OPENAI_API_KEY || ZAI_API_KEY) : ZAI_API_KEY;
+  // z.ai's OpenAI-compatible base already carries its version path (/api/paas/v4) —
+  // the SDK appends /chat/completions itself, so never bolt /v1 onto it.
   return createOpenAI({
-    baseURL: base.endsWith('/v1') ? base : `${base}/v1`,
+    baseURL: base,
     apiKey,
   }).chat(modelId) as unknown as LanguageModelV3;
 }
@@ -80,10 +94,10 @@ export function withRetry(model: LanguageModelV3, role: ModelRole): LanguageMode
         const fb = fallback as Record<string, unknown>;
         return async (...args: unknown[]) => {
           try {
-            return await fn(...args);
+            return await fn.call(target, ...args);
           } catch (err) {
             console.warn(`[model-router] ${role} failed, retrying with fallback: ${err}`);
-            return await (fb[key] as (...a: unknown[]) => Promise<unknown>)(...args);
+            return await (fb[key] as (...a: unknown[]) => Promise<unknown>).call(fallback, ...args);
           }
         };
       }
