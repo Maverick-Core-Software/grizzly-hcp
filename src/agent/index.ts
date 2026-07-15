@@ -9,7 +9,7 @@ import { Agent } from '@mastra/core/agent';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { getModel } from './model-router.js';
+import { getModel, withRetry } from './model-router.js';
 import { ragReadTools } from './tools/reads/rag.js';
 import { hcpReadTools } from './tools/reads/hcp.js';
 import { voiceLookupTools } from './tools/reads/voice-lookup.js';
