@@ -211,7 +211,7 @@ export function createMaverickAgent(channel: Channel = 'text') {
     id: 'maverick',
     name: 'Maverick',
     instructions: resolveInstructions(channel, FULL_INSTRUCTIONS),
-    model: getModel('REASONING'),
+    model: withRetry(getModel('REASONING'), 'REASONING'),
     tools: resolveTools(channel, allTools),
   });
 }

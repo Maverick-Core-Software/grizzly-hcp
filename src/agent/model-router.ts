@@ -78,12 +78,12 @@ export function withRetry(model: LanguageModelV3, role: ModelRole): LanguageMode
         const fn = raw as (...a: unknown[]) => unknown;
         const fallback = getFallbackModel(role);
         const fb = fallback as Record<string, unknown>;
-        return (...args: unknown[]) => {
+        return async (...args: unknown[]) => {
           try {
-            return fn(...args);
+            return await fn(...args);
           } catch (err) {
             console.warn(`[model-router] ${role} failed, retrying with fallback: ${err}`);
-            return (fb[key] as (...a: unknown[]) => unknown)(...args);
+            return await (fb[key] as (...a: unknown[]) => Promise<unknown>)(...args);
           }
         };
       }
