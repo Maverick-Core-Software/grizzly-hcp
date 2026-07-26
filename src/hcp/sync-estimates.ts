@@ -8,17 +8,19 @@
  * Run: npm run sync-estimates
  */
 import 'dotenv/config';
-import { execSync } from 'child_process';
 import fs from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { hcpGet } from './client.js';
+import { deleteJobPoints, publishCsv, resolveRagConfig } from './rag-publish.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const CSV_PATH    = path.resolve(__dirname, '../../data/estimates-enriched.csv');
-const SSH_KEY     = 'C:/Users/carte/.ssh/id_ed25519_proxmox';
-const PROXMOX     = 'root@192.168.1.12';
-const REMOTE_PATH = '/mnt/samsung-sata/mav-rag/hcp-exports/estimates-enriched.csv';
+
+/** Resolved CSV output path — overridable via ESTIMATES_CSV_PATH. */
+const CSV_PATH =
+  process.env.ESTIMATES_CSV_PATH
+    ? path.resolve(process.env.ESTIMATES_CSV_PATH)
+    : path.resolve(__dirname, '../../data/estimates-enriched.csv');
 
 // ── HCP types ──────────────────────────────────────────────────────────────
 
@@ -166,22 +168,11 @@ async function run() {
   await fs.writeFile(CSV_PATH, HEADER + '\n' + rows.join('\n'), 'utf-8');
   console.log(`Wrote ${enriched.length} rows → data/estimates-enriched.csv`);
 
-  // 4. Clear stale job points from grizzly_hcp so old summary-only entries don't pollute results
-  console.log('Clearing old job points from grizzly_hcp...');
-  const deleteCmd = [
-    `ssh -i "${SSH_KEY}" -o StrictHostKeyChecking=no ${PROXMOX}`,
-    `"curl -s -X POST http://localhost:6333/collections/grizzly_hcp/points/delete`,
-    `-H 'Content-Type: application/json'`,
-    `-d '{\\"filter\\":{\\"must\\":[{\\"key\\":\\"type\\",\\"match\\":{\\"value\\":\\"job\\"}}]}}'"`,
-  ].join(' ');
-  execSync(deleteCmd, { stdio: 'inherit' });
-
-  // 5. SCP enriched CSV to Proxmox — ingest watcher picks it up automatically
-  console.log('Uploading to Proxmox...');
-  execSync(
-    `scp -i "${SSH_KEY}" -o StrictHostKeyChecking=no "${CSV_PATH}" ${PROXMOX}:${REMOTE_PATH}`,
-    { stdio: 'inherit' },
-  );
+  // 4. Publish results to RAG ingest
+  console.log('Publishing to RAG ingest...');
+  const cfg = resolveRagConfig();
+  await deleteJobPoints(cfg);
+  await publishCsv(cfg, CSV_PATH);
 
   console.log('\nDone. RAG will re-index automatically.');
   console.log(`  Jobs synced:        ${allJobs.length}`);
