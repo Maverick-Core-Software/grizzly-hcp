@@ -19,13 +19,23 @@ auditable server-side schedule.
 
 Before installing, confirm the following on the target server:
 
-- **Node.js** is installed. Run `node --version` — the bundle requires a modern
-  Node release (v18 or later).
+- **Node.js** is installed. Run `command -v node` and `node --version` — the bundle
+  is built for **node20 or later**, and the service unit hardcodes the absolute path
+  `/usr/bin/node`. If node lives elsewhere, correct `ExecStart` before installing.
 - **Ingest directory** exists and is writable: `ls -ld /mnt/samsung-sata/mav-rag/hcp-exports`.
 - **Qdrant** is reachable at `http://localhost:6333`. Run `curl -s http://localhost:6333/` and verify a response.
 - **Qdrant collection** exists: run `curl -s http://localhost:6333/collections/grizzly_hcp` and confirm the collection is reported.
 
 If any of these checks fail, resolve them before proceeding.
+
+**Verified on the target host 2026-07-26 (read-only check through Orca):**
+
+| Check | Result |
+| --- | --- |
+| Node | `/usr/bin/node`, v22.23.1 |
+| Host timezone | `America/Chicago` — so the timer fires Sunday 03:30 Central |
+| Ingest directory | present |
+| Qdrant | answers on `localhost:6333`; `grizzly_hcp` collection exists |
 
 ## 3. File layout
 
@@ -78,10 +88,11 @@ be refreshed periodically.
 
 **Transfer to the server:**
 1. Transfer `hcp-cookies.json` to `/opt/hcp-estimates-sync/secrets/hcp-cookies.json`
-   using the **sanctioned deployment tool** (e.g. the secure file transfer method
-   specified by the team's deployment procedures).
-2. **DO NOT send the cookies file via `scp` with an SSH key.** The cookies file is
-   sensitive and must flow through the approved channel only.
+   through **Orca** — the sanctioned channel for every AIWA action. Open a terminal
+   in the `aiwa-host` environment and write the file there; do not reach the host
+   any other way.
+2. **DO NOT send the cookies file with `scp` and an SSH key.** Eliminating that key's
+   use is the entire point of this relocation — using it here would defeat it.
 3. After transfer, set permissions on the server:
    ```bash
    sudo chmod 600 /opt/hcp-estimates-sync/secrets/hcp-cookies.json
@@ -166,7 +177,7 @@ invalid or expired credentials.
    session.
 2. **Export** the new cookies to JSON as described in Section 5.
 3. **Transfer** the new `hcp-cookies.json` to `/opt/hcp-estimates-sync/secrets/`
-   using the sanctioned deployment tool — do not use `scp` with SSH keys.
+   through Orca, as in Section 5 — never with `scp` and an SSH key.
 4. **Restore permissions**:
    ```bash
    sudo chmod 600 /opt/hcp-estimates-sync/secrets/hcp-cookies.json
