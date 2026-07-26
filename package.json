@@ -31,7 +31,11 @@
     "sync-aliases": "tsx scripts/sync-aliases.ts",
     "test-mav": "tsx scripts/test-mav-memory.ts",
     "mine-pricebook": "tsx src/hcp/mine-pricebook-candidates.ts",
-    "list-employees": "tsx scripts/list-employees.ts"
+    "list-employees": "tsx scripts/list-employees.ts",
+    "workflow:morning-brief": "tsx src/automations/workflows/morning-brief.ts",
+    "workflow:stale-estimates": "tsx src/automations/workflows/stale-estimate-nurture.ts",
+    "workflow:review-queue": "tsx src/automations/workflows/review-request-queue.ts",
+    "workflow:unscheduled-slots": "tsx src/automations/workflows/unscheduled-slot-suggester.ts"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.85",
