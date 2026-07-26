@@ -212,12 +212,20 @@ HTTP request to localhost and an ordinary file copy. Nothing else about the scri
   - expected: all tests pass, final summary shows `fail 0`
   - if `tsx --test` is rejected by your tsx version, run
     `node --import tsx --test src/hcp/rag-publish.test.ts` instead and report which one you used
-- Run: `npx tsx -e "const m = await import('./src/hcp/rag-publish.ts'); const c = m.resolveRagConfig({}); console.log(c.target, c.qdrantUrl, c.collection)"`
+- Do NOT use `npx tsx -e "...await..."` for these checks. `tsx -e` compiles the snippet as CommonJS
+  and top-level `await` fails with `Top-level await is currently not supported with the "cjs" output
+  format`. Instead write a scratch file `__check.mts` in the repo root, run it with `npx tsx
+  ./__check.mts`, and delete it afterward (do not commit it).
+- Run, via that scratch-file method:
+  `import * as m from './src/hcp/rag-publish.js'; const c = m.resolveRagConfig({}); console.log(c.target, c.qdrantUrl, c.collection)`
   - expected: `remote http://localhost:6333 grizzly_hcp`
-- Run: `npx tsx -e "const m = await import('./src/hcp/rag-publish.ts'); console.log(m.resolveRagConfig({ RAG_TARGET: 'local' }).target)"`
+- Run, via that scratch-file method:
+  `import * as m from './src/hcp/rag-publish.js'; console.log(m.resolveRagConfig({ RAG_TARGET: 'local' }).target)`
   - expected: `local`
-- Run: `grep -c "id_ed25519_proxmox" src/hcp/sync-estimates.ts`
+- Run: `grep -c "ed25519" src/hcp/sync-estimates.ts || echo 0`
   - expected: `0`
+  - the `|| echo 0` is required: `grep -c` exits non-zero when the count is zero, which is the
+    passing case here. A non-zero exit on this command is SUCCESS, not a failure.
 - Run: `grep -n "rag-publish" src/hcp/sync-estimates.ts`
   - expected: one import line
 
@@ -272,10 +280,12 @@ must survive untouched.
 **Verification:**
 - Run: `npm run build:sync-estimates`
   - expected: esbuild reports success and writes `dist/sync-estimates.mjs`; no errors
-- Run: `grep -ci playwright dist/sync-estimates.mjs`
+- Run: `grep -ci playwright dist/sync-estimates.mjs || echo 0`
   - expected: `0`
-- Run: `grep -ci chromium dist/sync-estimates.mjs`
+- Run: `grep -ci chromium dist/sync-estimates.mjs || echo 0`
   - expected: `0`
+  - the `|| echo 0` is required on both: `grep -c` exits non-zero when the count is zero, which is
+    the passing case here. A non-zero exit on these two commands is SUCCESS, not a failure.
 - Run: `node -e "console.log(require('fs').statSync('dist/sync-estimates.mjs').size)"`
   - expected: a number well under 500000 (a bundle in the megabytes means Playwright leaked in - investigate)
 - Run: `RAG_TARGET=local HCP_COOKIES_FILE=/tmp/no-such-cookies.json node dist/sync-estimates.mjs`
@@ -469,3 +479,28 @@ Plan changes: the Codebase Primer now states the tree is clean and warns against
 per-session commit rationale changed from "other files are someone else's work" to "keep the
 commit scoped to the files this session names." No scope, task, interface, or verification step
 changed.
+
+**2026-07-26 - post-Session-1: two defective verification patterns corrected (mechanical).**
+Session 1 ran and committed correctly, but three of its five verification commands were written
+wrong by the planner, not executed wrong by the executor:
+
+1. `npx tsx -e "...await import(...)..."` cannot work. `tsx -e` compiles the snippet as CommonJS,
+   so top-level `await` fails with `Top-level await is currently not supported with the "cjs"
+   output format`. Sessions 2's two `tsx -e` checks were rewritten to use a scratch `__check.mts`
+   file run with `npx tsx ./__check.mts` and deleted afterward.
+2. `grep -c`/`grep -ci` exits non-zero when the count is zero. Every check whose expected value is
+   `0` therefore looks like a command failure. Session 2's `ed25519` check and Session 3's
+   `playwright`/`chromium` bundle checks now append `|| echo 0` and state explicitly that a
+   non-zero exit is the passing case.
+3. Session 1's `grep -ci playwright src/hcp/auth-cookies.ts` expected `0` but returns `1` - the
+   file's own header comment contains the phrase "Playwright-free". The substantive check (no
+   `playwright` in the import graph) passes. Left as-is since Session 1 is complete; noted so the
+   result is not misread later.
+
+Session 1 also required one orchestrator typo-level fix (escalation ladder step 1), committed as
+`c1ccaf1`: the `auth.ts` shim used `export { loginAndSave } from './auth-login.js'`, which creates
+no local binding, so the retained CLI self-invoke block referenced an undefined name
+(`TS2304: Cannot find name 'loginAndSave'`) and would have broken `npm run login`. Fixed by
+importing the symbol and re-exporting it separately.
+
+No scope, task, interface, or design decision changed.
