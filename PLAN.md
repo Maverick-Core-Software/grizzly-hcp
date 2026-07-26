@@ -295,6 +295,15 @@ must survive untouched.
 - Run: `node -e "const p=require('./package.json'); console.log(!!p.devDependencies.esbuild, !!p.scripts['build:sync-estimates'])"`
   - expected: `true true`
 
+
+**Git discipline - MANDATORY, read before committing:**
+Create exactly ONE new commit on top of whatever `HEAD` already is. You must NOT run
+`git reset` (any mode), `git commit --amend`, `git rebase`, `git checkout -- <file>`,
+`git restore`, `git revert`, `git push --force`, or `git clean`. Commits that are already in
+the history when you start are other people's work - including the orchestrator's - and
+rewriting or discarding them destroys that work. If your first commit attempt is wrong,
+fix it with an additional normal commit; never rewrite history to make it look tidy.
+
 **Commit:** stage ONLY `package.json` and `package-lock.json`. Do NOT stage `dist/` (it is
 gitignored). Do NOT use `git add -A` or `git add .` - keep the commit scoped to the files this
 session names.
@@ -393,6 +402,15 @@ server, do not run systemd commands, and do not run anything that touches a netw
   - expected: at least `1`
 - Confirm by reading the files: the `.env.example` contains no real cookie, token, password, or key value.
 
+
+**Git discipline - MANDATORY, read before committing:**
+Create exactly ONE new commit on top of whatever `HEAD` already is. You must NOT run
+`git reset` (any mode), `git commit --amend`, `git rebase`, `git checkout -- <file>`,
+`git restore`, `git revert`, `git push --force`, or `git clean`. Commits that are already in
+the history when you start are other people's work - including the orchestrator's - and
+rewriting or discarding them destroys that work. If your first commit attempt is wrong,
+fix it with an additional normal commit; never rewrite history to make it look tidy.
+
 **Commit:** stage ONLY `deploy/aiwa/hcp-estimates-sync.service`,
 `deploy/aiwa/hcp-estimates-sync.timer`, `deploy/aiwa/hcp-estimates-sync.env.example`, and
 `docs/AIWA-DEPLOY-sync-estimates.md`. Do NOT use `git add -A` or `git add .` - keep the commit
@@ -453,6 +471,15 @@ document behind the work is
   - expected: at least `1`
 - Confirm by reading: the brain vault note still contains all of its original content.
 
+
+**Git discipline - MANDATORY, read before committing:**
+Create exactly ONE new commit on top of whatever `HEAD` already is. You must NOT run
+`git reset` (any mode), `git commit --amend`, `git rebase`, `git checkout -- <file>`,
+`git restore`, `git revert`, `git push --force`, or `git clean`. Commits that are already in
+the history when you start are other people's work - including the orchestrator's - and
+rewriting or discarding them destroys that work. If your first commit attempt is wrong,
+fix it with an additional normal commit; never rewrite history to make it look tidy.
+
 **Commit:** stage ONLY `memory/HANDOFF.md` and `memory/JOURNAL.md`. The brain vault file lives
 outside this repository and is not committed here. Do NOT use `git add -A` or `git add .` - keep
 the commit scoped to the files this session names.
@@ -502,5 +529,28 @@ Session 1 also required one orchestrator typo-level fix (escalation ladder step 
 no local binding, so the retained CLI self-invoke block referenced an undefined name
 (`TS2304: Cannot find name 'loginAndSave'`) and would have broken `npm run login`. Fixed by
 importing the symbol and re-exporting it separately.
+
+No scope, task, interface, or design decision changed.
+
+**2026-07-26 - post-Session-2: git-discipline guard added to remaining sessions (mechanical).**
+Session 2 produced correct code but destroyed two orchestrator commits doing it. Its executor ran
+`git reset HEAD~1` followed by `git commit --amend` three times in a row - visible in the reflog as
+`8f1c2f5` -> reset -> `5f116b1` -> reset -> `08e5ee8` -> reset -> `75641a1` - apparently trying to
+end up with a single tidy commit. Each reset walked `HEAD` back one more commit, swallowing
+`c1ccaf1` (the Session 1 auth-shim fix) and `5bdf1b3` (the Session 1 plan revision) into its own.
+
+Recovered non-destructively by cherry-picking both lost commits back on top of Session 2's work:
+they are now `85cd084` and `90b5aed`. Nothing was lost. Verified tag `buildhandoff-s2-verified`
+marks the good state.
+
+Plan change: Sessions 3, 4 and 5 now carry a mandatory "Git discipline" block immediately above
+their commit instructions, forbidding `reset`, `commit --amend`, `rebase`, `checkout -- <file>`,
+`restore`, `revert`, `push --force` and `clean`, and requiring exactly one additive commit on top
+of existing `HEAD`. Session 2's other deviations are accepted as-is: it created
+`src/hcp/rag-publish.test.js` rather than the specified `.ts` (runs correctly under `tsx`), and its
+`deleteJobPoints` local-branch coverage is a signature-compatibility assertion rather than a
+behavioral test. Verification otherwise passed: 5 tests pass / 0 fail, `tsc --noEmit` clean for
+both files, defaults resolve to `remote http://localhost:6333 grizzly_hcp`, and
+`sync-estimates.ts` no longer references the deploy key.
 
 No scope, task, interface, or design decision changed.
