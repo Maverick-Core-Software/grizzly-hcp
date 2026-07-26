@@ -1,0 +1,21 @@
+[Unit]
+Description=Grizzly HCP Estimates Sync — weekly job that pulls job data from HCP, writes CSV, and clears stale Qdrant points
+After=network.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/hcp-estimates-sync
+ExecStart=node /opt/hcp-estimates-sync/sync-estimates.mjs
+EnvironmentFile=/opt/hcp-estimates-sync/hcp-estimates-sync.env
+SyslogIdentifier=hcp-estimates-sync
+
+# Hardening — this job only needs its own directory and the ingest directory
+ProtectSystem=full
+PrivateTmp=yes
+NoNewPrivileges=yes
+ProtectHome=yes
+ReadWritePaths=/mnt/samsung-sata/mav-rag/hcp-exports
+ReadOnlyPath=/opt/hcp-estimates-sync
+
+[Install]
+# Intentionally left blank — the timer is what gets enabled, not the service

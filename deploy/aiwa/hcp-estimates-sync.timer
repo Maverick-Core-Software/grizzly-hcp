@@ -1,0 +1,13 @@
+# NOTE: before enabling, confirm the server's local timezone — the schedule below
+# is expressed in server local time. Run "timedatectl" on the server to verify.
+[Unit]
+Description=Weekly timer for hcp-estimates-sync service
+
+[Timer]
+OnCalendar=Sun *03:30:00
+Persistent=true
+RandomizedDelaySec=300
+Unit=hcp-estimates-sync.service
+
+[Install]
+WantedBy=timers.target
