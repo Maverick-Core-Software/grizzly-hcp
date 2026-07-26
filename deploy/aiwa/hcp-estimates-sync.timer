@@ -4,7 +4,7 @@
 Description=Weekly timer for hcp-estimates-sync service
 
 [Timer]
-OnCalendar=Sun *03:30:00
+OnCalendar=Sun *-*-* 03:30:00
 Persistent=true
 RandomizedDelaySec=300
 Unit=hcp-estimates-sync.service
