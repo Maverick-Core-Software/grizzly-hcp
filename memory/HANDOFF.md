@@ -31,7 +31,12 @@ Operator instructions at `docs/AIWA-DEPLOY-sync-estimates.md` — deploy, verify
 
 - **No deployment has happened.** The systemd units and bundle are in the repo but have not been
   copied to `192.168.1.12` and are not active.
-- The PC-side workflow still works unchanged — that path is the rollback plan.
+- The PC-side workflow still runs unchanged — that path is the rollback plan.
+- **The PC schedule must be stopped as part of the cutover.** It is not a manual job: PM2 entry
+  `sync-estimates-weekly` (cwd `C:\Workspace\Active\grizzly-hcp`, `cron_restart: 0 2 * * 0`) runs it
+  Sundays at 02:00 America/Chicago. The AIWA timer fires Sunday 03:30, so leaving both enabled
+  double-runs the job against the `grizzly_hcp` collection every week. See Section 7.0 of
+  `docs/AIWA-DEPLOY-sync-estimates.md`. Stopping a PM2 process requires Carter's explicit approval.
 
 ## Configuration
 

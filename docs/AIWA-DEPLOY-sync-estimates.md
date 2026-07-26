@@ -124,6 +124,40 @@ If the job fails, check the journal (Section 8) before retrying.
 
 ## 7. Enabling and starting the timer
 
+### 7.0 First: retire the PC-side trigger (REQUIRED — approval needed)
+
+The job is **not** run by hand from the PC. It is scheduled by a PM2 entry on
+CartersPC:
+
+| Field | Value |
+| --- | --- |
+| PM2 name | `sync-estimates-weekly` |
+| Script | `node_modules\tsx\dist\cli.mjs` with `src/hcp/sync-estimates.ts` |
+| cwd | `C:\Workspace\Active\grizzly-hcp` |
+| `cron_restart` | `0 2 * * 0` — Sundays 02:00 America/Chicago |
+
+Verified 2026-07-26: that entry produced `data\estimates-enriched.csv` (353239 bytes)
+at 02:01, and the byte-identical file was ingested on AIWA at 07:04:23 UTC.
+
+**Both schedules writing the same Qdrant collection is the failure mode this step
+prevents.** The AIWA timer fires Sunday 03:30 Central, 90 minutes after the PM2
+entry. Enabling the timer while the PM2 entry is still active means the estimates
+are pulled, the collection's stale points deleted, and the CSV republished twice
+every Sunday.
+
+Stop the PM2 entry **before** enabling the timer. This changes a running process,
+so it requires Carter's explicit approval and must use the elevated PM2 pattern —
+never user-space `pm2`:
+
+```bash
+"/c/Program Files/gsudo/Current/gsudo.exe" cmd /c "set PM2_HOME=C:\ProgramData\pm2 && pm2 stop sync-estimates-weekly && pm2 save"
+```
+
+Use `pm2 stop`, not `pm2 delete` — keeping the entry in the dump is what makes the
+rollback in Section 10 a one-command operation.
+
+### 7.1 Install the units
+
 Install the unit files, timer, and environment file on the server (these come from
 this repo):
 
@@ -195,18 +229,35 @@ No timer or service changes are needed — only a fresh cookies file.
 
 ## 10. Rollback
 
-To rollback to the previous arrangement (running the job by hand from the PC):
+Rollback has **two halves**, and the PC half is the one that actually restores
+service. Do both.
+
+**1. Stop the AIWA timer** (leave the files in place — that makes re-cutover cheap):
 
 ```bash
 sudo systemctl disable --now hcp-estimates-sync.timer
+```
+
+The bundle, env file, and cookies file at `/opt/hcp-estimates-sync/` remain intact.
+Only remove the units if you are abandoning the relocation entirely:
+
+```bash
 sudo rm /etc/systemd/system/hcp-estimates-sync.timer
 sudo rm /etc/systemd/system/hcp-estimates-sync.service
 sudo systemctl daemon-reload
 ```
 
-The bundle, env file, and cookies file at `/opt/hcp-estimates-sync/` remain
-intact. The job can still be run manually from the PC by copying the bundle to
-the server and executing it with the environment file in place.
+**2. Restart the PC-side PM2 entry** (requires Carter's explicit approval):
 
-Disabling the timer restores the pre-deployment state — the same job continues to
-work when run by hand from the PC, exactly as it did before this deployment.
+```bash
+"/c/Program Files/gsudo/Current/gsudo.exe" cmd /c "set PM2_HOME=C:\ProgramData\pm2 && pm2 start sync-estimates-weekly && pm2 save"
+```
+
+This restores the Sunday 02:00 schedule described in Section 7.0. Note that the
+PC path uses the passphrase-less deploy key over SSH — rolling back re-introduces
+that key use, which is the exact dependency this relocation removes. Treat rollback
+as temporary and re-attempt the cutover once the blocking issue is fixed.
+
+Confirm exactly one schedule is active afterward: the timer stopped on AIWA
+(`systemctl list-timers --all | grep hcp-estimates-sync` shows nothing active) and
+the PM2 entry `online`.
