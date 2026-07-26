@@ -11,3 +11,4 @@ proposals/
 *.log
 .playwright/
 .worktrees/
+.env.bak*
