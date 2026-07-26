@@ -3,7 +3,7 @@
  * Uses native fetch with cookies saved by auth.ts (npm run login).
  * No headless browser required for API calls.
  */
-import { getCookieHeader } from './auth.js';
+import { getCookieHeader } from './auth-cookies.js';
 
 const BASE = 'https://pro.housecallpro.com';
 
