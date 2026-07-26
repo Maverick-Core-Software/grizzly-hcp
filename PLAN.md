@@ -17,11 +17,10 @@
 - **Key folders:** `src/hcp/` (HCP API client + jobs), `scripts/` (one-off tools),
   `data/` (CSV output, gitignored), `auth/` (cookies, gitignored), `dist/` (gitignored),
   `docs/superpowers/specs/` (design docs).
-- **DIRTY FILES - ANOTHER PERSON'S IN-FLIGHT WORK. DO NOT STAGE, EDIT, REVERT, OR
-  COMMIT:** `.serena/project.yml`, `package.json`, `src/agent/resolver.ts`,
-  `.env.bak-pre-lxc-20260721-130527`, `src/automations/workflows/`. Every session
-  stages only its own named files. This is why the plan is designed to require **no
-  `package.json` edit until Session 3**, and Session 3's edit is called out explicitly.
+- **Working tree is CLEAN** as of commit `6ed6412` (pre-existing in-flight work was
+  committed first, in five scoped commits). Every session still stages only its own
+  named files - never `git add -A` - so each commit stays reviewable.
+- **Never commit `.env` or `.env.bak*`** - both are gitignored and carry live API keys.
 - **Gotcha - `npm run login`:** `package.json` maps `login` → `tsx src/hcp/auth.ts`,
   and `auth.ts` self-invokes via a regex on `process.argv[1]`. Session 1 keeps that
   block in `auth.ts` so the script keeps working untouched.
@@ -119,8 +118,8 @@ Playwright, so the split below is required.
   - expected: prints `/tmp/does-not-exist.json` then `ERR: No HCP session found. Run: npm run login`
 
 **Commit:** stage ONLY `src/hcp/auth-cookies.ts`, `src/hcp/auth-login.ts`, `src/hcp/auth.ts`,
-`src/hcp/client.ts`. Do NOT use `git add -A` or `git add .` - other modified files in this repo
-belong to someone else's unfinished work and must stay uncommitted.
+`src/hcp/client.ts`. Do NOT use `git add -A` or `git add .` - keep the commit scoped to the files
+this session names.
 Commit message: `refactor: split HCP auth into runtime and login halves`
 
 ---
@@ -223,8 +222,8 @@ HTTP request to localhost and an ordinary file copy. Nothing else about the scri
   - expected: one import line
 
 **Commit:** stage ONLY `src/hcp/rag-publish.ts`, `src/hcp/rag-publish.test.ts`,
-`src/hcp/sync-estimates.ts`. Do NOT use `git add -A` or `git add .` - other modified files in
-this repo belong to someone else's unfinished work and must stay uncommitted.
+`src/hcp/sync-estimates.ts`. Do NOT use `git add -A` or `git add .` - keep the commit scoped
+to the files this session names.
 Commit message: `feat: configurable RAG publish target for sync-estimates`
 
 ---
@@ -246,11 +245,9 @@ of that file plus `src/hcp/client.ts`, `src/hcp/auth-cookies.ts`, `src/hcp/rag-p
 the `dotenv` package - notably it does NOT include `playwright`, and it must stay that way,
 because the target machine is a headless server where Playwright cannot and must not be installed.
 
-**IMPORTANT - shared file warning:** `package.json` in this repo currently has uncommitted
-changes made by someone else (four `workflow:*` script entries near the end of the `scripts`
-block). You must ADD to this file without disturbing those lines, and when you commit it those
-lines will be carried along - that is expected and acceptable. Do not revert them, reorder the
-file, reformat it, or run any command that rewrites it wholesale.
+**IMPORTANT - `package.json` care:** add to this file surgically. Do not reorder it, reformat it,
+or run any command that rewrites it wholesale - it contains many unrelated script entries that
+must survive untouched.
 
 **Tasks:**
 
@@ -289,9 +286,8 @@ file, reformat it, or run any command that rewrites it wholesale.
   - expected: `true true`
 
 **Commit:** stage ONLY `package.json` and `package-lock.json`. Do NOT stage `dist/` (it is
-gitignored). Do NOT use `git add -A` or `git add .` - other modified files in this repo belong to
-someone else's unfinished work and must stay uncommitted. Note in your report that `package.json`
-also carries the four pre-existing `workflow:*` script lines you did not write.
+gitignored). Do NOT use `git add -A` or `git add .` - keep the commit scoped to the files this
+session names.
 Commit message: `build: esbuild bundle for headless sync-estimates`
 
 ---
@@ -389,8 +385,8 @@ server, do not run systemd commands, and do not run anything that touches a netw
 
 **Commit:** stage ONLY `deploy/aiwa/hcp-estimates-sync.service`,
 `deploy/aiwa/hcp-estimates-sync.timer`, `deploy/aiwa/hcp-estimates-sync.env.example`, and
-`docs/AIWA-DEPLOY-sync-estimates.md`. Do NOT use `git add -A` or `git add .` - other modified
-files in this repo belong to someone else's unfinished work and must stay uncommitted.
+`docs/AIWA-DEPLOY-sync-estimates.md`. Do NOT use `git add -A` or `git add .` - keep the commit
+scoped to the files this session names.
 Commit message: `deploy: systemd unit, timer, and runbook for AIWA sync-estimates`
 
 ---
@@ -448,13 +444,28 @@ document behind the work is
 - Confirm by reading: the brain vault note still contains all of its original content.
 
 **Commit:** stage ONLY `memory/HANDOFF.md` and `memory/JOURNAL.md`. The brain vault file lives
-outside this repository and is not committed here. Do NOT use `git add -A` or `git add .` - other
-modified files in this repo belong to someone else's unfinished work and must stay uncommitted.
+outside this repository and is not committed here. Do NOT use `git add -A` or `git add .` - keep
+the commit scoped to the files this session names.
 Commit message: `docs: handoff + journal for sync-estimates AIWA relocation`
 
 ---
 
 ## Revisions
 
-*(Empty at plan creation. The orchestrator appends dated entries here when the plan changes
-mid-run: what changed and why.)*
+**2026-07-25 - pre-dispatch: working tree cleaned, dirty-file warnings removed.**
+The plan was written while the repo had uncommitted in-flight work, so it carried warnings
+telling Qwen not to touch `.serena/project.yml`, `package.json`, `src/agent/resolver.ts`,
+`src/automations/workflows/`, and an `.env` backup - and Session 3 warned that its
+`package.json` edit would drag along four unrelated `workflow:*` script lines.
+
+Carter directed that the in-flight work be committed instead. It was, in five scoped commits
+(`20340b9`..`6ed6412`): a gitignore rule for `.env.bak*`, the scheduled workflow jobs, the HCP
+service-address investigation scripts, the Maverick voice-tone tweak, and the regenerated serena
+config. `.env.bak-pre-lxc-20260721-130527` was deliberately NOT committed - it holds live API
+keys and was untracked rather than ignored; the new gitignore rule closes that gap.
+
+Plan changes: the Codebase Primer now states the tree is clean and warns against committing
+`.env*`; Session 3's shared-file warning is reduced to "edit `package.json` surgically"; and the
+per-session commit rationale changed from "other files are someone else's work" to "keep the
+commit scoped to the files this session names." No scope, task, interface, or verification step
+changed.
