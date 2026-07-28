@@ -209,7 +209,9 @@ distinct from the jobs CSV.
 
 **Stack / decisions:**
 - TypeScript, ESM. No new dependencies.
-- **List endpoint:** `GET /beta/estimates?page=<n>&page_size=100&sort_by=most_relevant&expand[]=canceled_options&expand[]=options.notes`.
+- **List endpoint:** `GET /beta/estimates?page=<n>&page_size=100&expand[]=canceled_options&expand[]=options.notes`.
+  *(Corrected 2026-07-28: an earlier draft of this line also carried
+  `sort_by=most_relevant`, which makes pagination unstable — see Session 2b.)*
   Build the query with `URLSearchParams` and `params.append('expand[]', …)` the
   way `sync-estimates.ts` appends `expand[]=customer`. Paginate on
   **`total_pages_count`** — note the spelling, it differs from `/alpha/jobs`'s
@@ -277,6 +279,77 @@ distinct from the jobs CSV.
   saved session expired and a human must run `npm run login`.
 
 **Commit:** `feat: add HCP estimates exporter`
+
+---
+
+## Session 2b — corrections to the estimates exporter
+
+**Goal:** fix four defects in the existing `src/hcp/export-estimates.ts`. The file
+already exists and works; do not rewrite it. Make only the changes below.
+
+**Independent:** no — corrects Session 2 and must land before Session 3.
+
+**Context you need:**
+- `src/hcp/export-estimates.ts` exists and exports `runEstimatesExport`. Read it
+  first. It pulls HCP estimates and writes one CSV row per estimate option.
+- Its CSV header is correct and must not change.
+- `src/hcp/export-customers.ts` shows the entry-point-guard pattern this repo
+  uses. Read it for reference.
+
+**Tasks:**
+
+1. **Remove the unstable sort.** In the list-endpoint query, delete the
+   `sort_by=most_relevant` parameter entirely. Keep `page`, `page_size=100`, and
+   both `expand[]` parameters exactly as they are. That sort makes the server
+   reorder rows between page fetches, so a 9-page sweep returned 771 distinct
+   estimates with 4 duplicates instead of all 810. Without it the same sweep
+   returns 810 of 810 with no duplicates. This was verified directly against the
+   live API — do not re-add the parameter.
+
+2. **Add an entry-point guard.** The file currently calls `run()` at module load,
+   so merely importing `runEstimatesExport` triggers a full export and can call
+   `process.exit(1)`. Wrap the CLI invocation in the same
+   `if (process.argv[1] === fileURLToPath(import.meta.url))` guard the other
+   exporters use, so importing the module has no side effects. Session 3 imports
+   this function, so this must be correct.
+
+3. **Fix the service address precedence.** It is currently backwards and treats
+   an empty string as a real value. The order must be: the estimate's
+   `request_address` first, then the estimate's `address`, then the option's
+   `address`. Treat `null`, `undefined`, and `''` alike as "absent" and keep
+   falling back — `??` alone is not sufficient because the API returns empty
+   strings. 55 of 910 rows came out with a blank address because of this.
+
+4. **Stop asserting that an option exists.** The line-item fetch uses a non-null
+   assertion on the option (`eo.option!.id`). An estimate with no options is
+   represented with a `null` option, and that expression will throw and abort the
+   whole export when one appears. Skip the line-item fetch for a null option and
+   use an empty list instead, so the row is still produced with blank option
+   columns as intended.
+
+**Do not change:** the CSV header, the column order, the field mappings other
+than `service_address`, the output path, the env var, the line-item endpoint, or
+the `runEstimatesExport` return-type shape.
+
+**Verification:**
+- Run: `npm run export-estimates` — expected: exits 0.
+- Report the estimate count printed by the run. It must be **810**, not 771.
+- Load the CSV and report: total row count, the number of distinct
+  `option_uuid` values, and the number of rows whose `service_address` is blank.
+  Distinct `option_uuid` count must equal the row count minus the number of rows
+  with a blank `option_uuid` (i.e. no duplicate options). The blank-address count
+  must be lower than 55.
+- Confirm and state that the header is unchanged and still contains none of
+  `invoice_number`, `job_number`, `total_amount`, `completed_at`,
+  `unit_of_measure`.
+- Run: `npx tsc --noEmit` — expected: the only errors are the two pre-existing
+  ones in `src/automations/estimates/from-proposal.ts` and
+  `src/hcp/mine-pricebook-candidates.ts`. No new errors, and none in
+  `export-estimates.ts`.
+- If this fails with an HCP authentication error, stop and report it — the PC's
+  saved session expired and a human must run `npm run login`.
+
+**Commit:** `fix: complete and correct the HCP estimates exporter`
 
 ---
 
@@ -724,8 +797,37 @@ Mechanical corrections only; no scope or design change.
   `export-pricebook.ts` kept its hardcoded path. Fixed by the orchestrator (B4
   rung 1 — wiring the blueprint already fully specified, mirroring the pattern
   already present in `export-customers.ts`).
-- **Pre-existing typecheck failures.** `npx tsc --noEmit` reports errors in
+- **Pre-existing typecheck failures (still true).** `npx tsc --noEmit` reports errors in
   `src/automations/estimates/from-proposal.ts` (the retired DOCX flow) and
   `src/hcp/mine-pricebook-candidates.ts`. Neither file is touched by this build.
   Later sessions must treat a clean typecheck as *"no new errors outside those
   two files"*, not a zero-error exit.
+
+### 2026-07-28 — Session 2 verification: corrective session added
+
+Session 2 shipped a working exporter with the correct CSV header, but
+verification found four defects. They exceed a mechanical fix, so **Session 2b**
+was added rather than patched by the orchestrator. No scope or design change —
+the deliverable is still one exporter with the header Session 2 specified.
+
+- **Unstable pagination — my planning error, not the executor's.** Session 2's
+  endpoint spec included `sort_by=most_relevant`. Probing the live API directly
+  proved the server reorders records between page requests under that sort: a
+  full 9-page sweep returned 775 records, 771 distinct, 4 duplicated, and 39 of
+  the 810 estimates never appeared at all. The same sweep with `sort_by` removed
+  returned 810 fetched / 810 distinct / 0 duplicates. The parameter is removed
+  from the Session 2 spec above and from the code in Session 2b.
+- **No entry-point guard.** `run()` is invoked at module load, so importing
+  `runEstimatesExport` would fire a full export and could call `process.exit(1)`.
+  Session 3 imports that function, so this would have broken it.
+- **`service_address` precedence reversed**, and `??` let empty strings through
+  as real values, blanking the address on 55 of 910 rows.
+- **Non-null assertion on a nullable option** (`eo.option!.id`) would throw and
+  abort the entire export the first time an optionless estimate appears. It did
+  not fire in this run only because every estimate currently has at least one
+  option.
+
+Worth recording: the executor's own Session 1 report claimed it had added the
+`PRICEBOOK_CSV_PATH` override, and it had not. Reports from the executor are not
+evidence — every session is verified against git, the files, and live command
+output.
