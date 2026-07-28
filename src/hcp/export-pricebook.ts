@@ -216,7 +216,13 @@ export async function runPricebookExport(): Promise<{
 
 // -- CLI entry --
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
+// esbuild rewrites import.meta.url to the *bundle's* path, so inside a bundle
+// this module would look like the entry point and self-run on import. Also
+// require the script name to match this module.
+if (
+  process.argv[1] === fileURLToPath(import.meta.url) &&
+  path.basename(process.argv[1], path.extname(process.argv[1])) === 'export-pricebook'
+) {
   runPricebookExport()
     .then(() => process.exit(0))
     .catch(err => {

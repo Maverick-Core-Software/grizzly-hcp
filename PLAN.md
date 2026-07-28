@@ -831,3 +831,26 @@ Worth recording: the executor's own Session 1 report claimed it had added the
 `PRICEBOOK_CSV_PATH` override, and it had not. Reports from the executor are not
 evidence — every session is verified against git, the files, and live command
 output.
+
+### 2026-07-28 — Session 3: entry guards had to be made bundle-safe
+
+Mechanical correction found by Session 3's own verification; no scope or design
+change. Recorded because it changes files Session 1 and Session 2b wrote.
+
+- **esbuild defeats the `import.meta.url` entry-point guard.** In an ESM bundle
+  `import.meta.url` resolves to the *bundle's* path, so every bundled module's
+  guard compares the bundle against itself and evaluates true. The first run of
+  `dist/sync-catalog.mjs` showed all three exporters firing at import time —
+  "Fetching Grizzly price book from HCP…", "Fetching all customers…", "Fetching
+  estimates…" all printed *before* the `RAG_TARGET` guard could reject the run.
+  Each export would also have run twice per invocation. Fixed by requiring the
+  script basename to match the module as well, in all three of
+  `export-pricebook.ts`, `export-customers.ts` and `export-estimates.ts`.
+  Re-verified: with `RAG_TARGET=remote` the bundle now exits 1 with only the
+  local-only message and no HCP traffic.
+- **The bundle cannot find the HCP cookie file by default.** `auth-cookies.ts`
+  resolves its default relative to `__dirname`, which is `dist/` in a bundle, so
+  a bundled run fails with "No HCP session found" unless `HCP_COOKIES_FILE` is
+  set. This is not a defect — Session 5's env template already sets it — but the
+  variable is mandatory for the bundle, not optional, and any smoke test of
+  `dist/sync-catalog.mjs` must set it.
