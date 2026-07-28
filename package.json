@@ -11,6 +11,7 @@
     "export-pricebook": "tsx src/hcp/export-pricebook.ts",
     "export-customers": "tsx src/hcp/export-customers.ts",
     "export-jobs": "tsx src/hcp/export-jobs.ts",
+    "export-estimates": "tsx src/hcp/export-estimates.ts",
     "sync-pricebook": "bash scripts/sync-pricebook.sh",
     "push-pricebook": "bash scripts/push-pricebook.sh",
     "enrich-rag": "tsx src/hcp/enrich-pricebook-rag.ts",
