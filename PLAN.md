@@ -412,6 +412,27 @@ relogin decision before deleting the PC daemon.
 
 ## Revisions
 
+**2026-07-28 (evening) — O2 step 3 executed; step 4 deliberately split in two:**
+
+- **Done:** O2 step 3 (provision `HCP_MCP_TOKEN` to aiwa-host) and the `HCP_MCP_URL` +
+  `HCP_MCP_TOKEN` half of step 4. Both `/opt/hcp-estimates-sync/hcp-estimates-sync.env` and
+  `/opt/hcp-catalog-sync/hcp-catalog-sync.env` now carry `HCP_MCP_URL=http://192.168.1.14:7332/`
+  and a 64-char `HCP_MCP_TOKEN` (byte-identical in both), mode `644` → `600 root:root`,
+  backups `.bak-20260728T231321Z` at `0600`. `HCP_COOKIES_FILE` untouched.
+- **Deliberately NOT done:** `HCP_VIA_MCP=true`. Step 4 as written sets all three keys at once,
+  but steps 1–2 (deploy the daemon to CT102, ship the rebuilt sync bundles) have not run.
+  Setting the flag now would point the Sunday 03:34/04:34 CDT timers at a daemon that does not
+  exist and break two currently-working jobs. **Provisioning a credential and cutting over are
+  separate approvals.** The remaining work of step 4 is one line per env file.
+- The credential moved by encrypted transport, not by paste: `tools/pack-secret.ps1` +
+  `tools/install-hcp-mcp-token.sh` in the **Hermes-Supervisor** repo (commits `2637068`,
+  `e431b0c`), documented in that repo's `docs/SECRET-TRANSFER-RUNBOOK.md`. Re-running the
+  installer with `--enable` is how step 4 gets finished; it replaces rather than appends.
+- **The identical token must be configured on the CT102 daemon in step 1.** Carter holds it in
+  his password manager — it exists in plaintext nowhere else, and cannot be recovered from the
+  env files without root on aiwa-host.
+- No scope or design change; sessions 1–4 and O1 are untouched.
+
 **2026-07-28 — orchestrator verification pass (read-only; did not execute):**
 - Claims 2–8 verified by direct file/state inspection; all hold.
 - Claim 1 (live reachability): reachability **CONFIRMED** (TCP `CONNECT_OK` + HTTP 401

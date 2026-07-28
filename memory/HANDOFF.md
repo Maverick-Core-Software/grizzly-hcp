@@ -254,13 +254,30 @@ such dump/live gaps while that migration continues.
 
 ---
 
-### HCP credential consolidation — 2026-07-28 (code-ready, not yet cut over)
+### HCP credential consolidation — 2026-07-28 (token provisioned; flag NOT set; not yet cut over)
 
 A second auth path for the sync exports exists in the code on this branch but is **not yet live
-on AIWA**. The operator cutover (set the env vars on the sync host, deploy the daemon side on
-CT102) is a separate approval-gated step that has not run. This subsection describes the
-capability and the env the operator must set; until that step runs, both sync jobs continue to
-authenticate via the cookie file as documented in the tables above.
+on AIWA**. The operator cutover (deploy the daemon side on CT102, ship the rebuilt sync bundles,
+set `HCP_VIA_MCP=true`) is a separate approval-gated step that has not run. This subsection
+describes the capability and the env the operator must set; until that step runs, both sync jobs
+continue to authenticate via the cookie file as documented in the tables above.
+
+**Credential state as of 2026-07-28 23:13 UTC — two of the three keys are live.** Both
+`/opt/hcp-estimates-sync/hcp-estimates-sync.env` and `/opt/hcp-catalog-sync/hcp-catalog-sync.env`
+now carry `HCP_MCP_URL=http://192.168.1.14:7332/` and a 64-char `HCP_MCP_TOKEN` (verified
+byte-identical across both files), mode moved `644` → `600 root:root`, backups
+`.bak-20260728T231321Z` at `0600`, `HCP_COOKIES_FILE` intact. **`HCP_VIA_MCP` is deliberately
+absent**, so behavior is unchanged and the Sunday timers still authenticate by cookie — setting
+it before CT102's daemon is deployed would break two working jobs. Finishing the cutover is one
+line per env file.
+
+The token moved by encrypted transport, never by paste: `tools/pack-secret.ps1` and
+`tools/install-hcp-mcp-token.sh` in the **Hermes-Supervisor** repo (`C:\Workspace\Shared\Agents\Hermes-Supervisor`,
+commits `2637068` + `e431b0c`), procedure in that repo's `docs/SECRET-TRANSFER-RUNBOOK.md`.
+Re-running that installer with `--enable` adds the flag; it replaces rather than appends, so it
+is safe to re-run. **The identical token must be set on the CT102 daemon.** Carter holds it in
+his password manager; it exists in plaintext nowhere else and cannot be read back off aiwa-host
+without root.
 
 - **The sync exports will authenticate through the CT102 `hcp-mcp` daemon when
   `HCP_VIA_MCP=true`.** `src/hcp/client.ts` gates `hcpGet` on that flag: set → the read is

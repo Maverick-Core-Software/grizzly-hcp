@@ -4,6 +4,39 @@ Entries are append-only. History is never rewritten.
 
 ---
 
+## 2026-07-28 — HCP_MCP_TOKEN provisioned to aiwa-host (O2 step 3)
+
+Executed Operator Session O2 step 3 and half of step 4 from `PLAN.md`. The daemon cutover itself
+did **not** run.
+
+- Both sync EnvironmentFiles on aiwa-host now hold `HCP_MCP_URL=http://192.168.1.14:7332/` and a
+  64-char `HCP_MCP_TOKEN`, byte-identical across the two, at `600 root:root` (was `644`).
+  Backups `.bak-20260728T231321Z` at `0600`. `HCP_COOKIES_FILE` untouched.
+- **`HCP_VIA_MCP` deliberately left unset.** O2 steps 1–2 (deploy the daemon to CT102, ship the
+  rebuilt sync bundles) have not run, so flipping the flag would point Sunday's 03:34/04:34 CDT
+  timers at a daemon that isn't there. Behavior is therefore unchanged: both jobs still
+  authenticate by cookie. Provisioning a credential and cutting over are separate approvals.
+- No unit was started, stopped, restarted, or reloaded.
+
+Transport: the token was carried as AES-256-CBC ciphertext (PBKDF2 600k/SHA-512) rather than
+pasted, because the Orca terminal channel is on-screen and captured in scrollback. Tooling lives
+in the Hermes-Supervisor repo (`tools/pack-secret.ps1`, `tools/install-hcp-mcp-token.sh`, commits
+`2637068` + `e431b0c`, runbook `docs/SECRET-TRANSFER-RUNBOOK.md`). Storage on the target stays the
+house standard — a plain `0600` EnvironmentFile; the encryption covered transport only.
+
+Generalizable findings:
+
+- **`openssl enc` is unauthenticated.** Wrong-passphrase and truncated-blob cases are
+  indistinguishable from garbage plaintext, so a magic header sealed inside the ciphertext and
+  checked after decryption is load-bearing, not decorative.
+- **Validate at the cheap end.** The installer rejected tokens with whitespace or under 16 chars,
+  but the packer did not — so a bad value packed cleanly on the PC and failed only after the blob
+  had been carried across and the passphrase retyped. Mirroring the target's checks on the
+  authoring side turns a five-minute round trip into a two-second error (`e431b0c`).
+- **A non-echoing prompt in a driven terminal keeps a secret out of the agent's hands.** The
+  operator types the passphrase into the Orca tab directly; `read -rs` never echoes, so it never
+  enters the buffer the agent reads. The agent handled ciphertext only, at either end.
+
 ## 2026-07-25 — sync-estimates AIWA relocation
 
 Moved the `sync-estimates` weekly job from the Windows PC to run natively on the Proxmox host
