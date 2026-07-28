@@ -66,6 +66,10 @@ function dollars(cents: number): string {
   return `$${(cents / 100).toFixed(2)}`;
 }
 
+function nonEmpty(s: string | null | undefined): string | undefined {
+  return s && s.trim() ? s : undefined;
+}
+
 async function fetchLineItems(optionId: string): Promise<HcpLineItem[]> {
   try {
     const res = await hcpGet<Record<string, unknown>>(`/alpha/estimates/${optionId}/line_items`);
@@ -107,7 +111,7 @@ async function run(): Promise<{ csvPath: string; estimateCount: number; optionCo
   let page = 1;
 
   while (true) {
-    const params = new URLSearchParams({ page: String(page), page_size: '100', sort_by: 'most_relevant' });
+    const params = new URLSearchParams({ page: String(page), page_size: '100' });
     params.append('expand[]', 'canceled_options');
     params.append('expand[]', 'options.notes');
 
@@ -136,7 +140,7 @@ async function run(): Promise<{ csvPath: string; estimateCount: number; optionCo
   const enriched: Enriched[] = await pMap(
     estimateOptions,
     async eo => {
-      const items = await fetchLineItems(eo.option!.id);
+      const items = eo.option ? await fetchLineItems(eo.option.id) : [];
       done++;
       process.stdout.write(`\r  ${done}/${estimateOptions.length} enriched`);
       return { ...eo, lineItems: items };
@@ -157,7 +161,7 @@ async function run(): Promise<{ csvPath: string; estimateCount: number; optionCo
   const rows = enriched.map(e => {
     const { estimate, option, lineItems } = e;
 
-    const serviceAddr = option?.address ?? estimate.request_address ?? estimate.address ?? '';
+    const addr = nonEmpty(estimate.request_address) ?? nonEmpty(estimate.address) ?? nonEmpty(option?.address);
     const optTotal = option?.total_amount ?? estimate.value;
 
     // notes: estimate notes + option notes
@@ -180,7 +184,7 @@ async function run(): Promise<{ csvPath: string; estimateCount: number; optionCo
       estimate.customer_name,
       estimate.customer_billable_email,
       estimate.customer_phone_number,
-      serviceAddr,
+      addr ?? '',
       estimate.created_at,
       estimate.outcome,
       option?.name ?? '',
@@ -198,9 +202,15 @@ async function run(): Promise<{ csvPath: string; estimateCount: number; optionCo
   return { csvPath: CSV_PATH, estimateCount: allEstimates.length, optionCount: rows.length, withLineItems: withItems };
 }
 
-run().catch(err => {
-  console.error('\nFailed:', err.message);
-  process.exit(1);
-});
-
 export { run as runEstimatesExport };
+
+// -- CLI entry --
+
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  run()
+    .then(() => process.exit(0))
+    .catch(err => {
+      console.error('\nFailed:', err.message);
+      process.exit(1);
+    });
+}
