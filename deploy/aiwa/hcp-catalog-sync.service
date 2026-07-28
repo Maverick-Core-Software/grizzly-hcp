@@ -1,0 +1,23 @@
+[Unit]
+Description=Grizzly HCP Catalog Sync — weekly job that exports the HCP price book, customers and estimates and publishes them to the RAG ingest directory
+After=network.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/hcp-catalog-sync
+# systemd requires an absolute path here. /usr/bin/node is v22 on the target host;
+# confirm with "command -v node" during pre-flight before installing.
+ExecStart=/usr/bin/node /opt/hcp-catalog-sync/sync-catalog.mjs
+EnvironmentFile=/opt/hcp-catalog-sync/hcp-catalog-sync.env
+SyslogIdentifier=hcp-catalog-sync
+
+# Hardening — this job only needs its own directory and the ingest directory
+ProtectSystem=full
+PrivateTmp=yes
+NoNewPrivileges=yes
+ProtectHome=yes
+# The install root stays writable: the job writes the three CSVs under it
+# before copying the results into the ingest directory.
+ReadWritePaths=/mnt/samsung-sata/mav-rag/hcp-exports
+
+# No [Install] section on purpose — the timer is what gets enabled, not the service.

@@ -1,0 +1,18 @@
+# NOTE: before enabling, confirm the server's local timezone — the schedule below
+# is expressed in server local time. Run "timedatectl" on the server to verify;
+# the host is America/Chicago.
+#
+# 04:30 is deliberate and must not be moved to 03:30: that is when
+# hcp-estimates-sync.timer fires, and its downstream re-embedding runs for
+# several minutes. The two jobs write into the same ingest directory.
+[Unit]
+Description=Weekly timer for hcp-catalog-sync service
+
+[Timer]
+OnCalendar=Sun *-*-* 04:30:00
+Persistent=true
+RandomizedDelaySec=300
+Unit=hcp-catalog-sync.service
+
+[Install]
+WantedBy=timers.target

@@ -1,7 +1,14 @@
-# Weekly full sync: pull customers, jobs, and price book from HCP → re-index all in RAG.
+# Weekly brain-vault re-ingest.
+#
+# The HCP exports that used to live here — customers, jobs, and the price book —
+# now run on the AIWA server as the hcp-catalog-sync systemd timer, which also
+# exports estimates. They no longer run on this PC and no longer copy anything to
+# the server, so nothing in this script needs the deploy key.
+#
+# What remains is the Obsidian brain vault re-ingest into agent-os memory.
 # Scheduled via Windows Task Scheduler — runs every Monday at 6am.
 
-$ProjectDir = "C:\Users\carte\Grizzly-HCP"
+$ProjectDir = "C:\Workspace\Active\grizzly-hcp"
 $LogFile    = "$ProjectDir\logs\weekly-sync.log"
 
 New-Item -ItemType Directory -Force -Path "$ProjectDir\logs" | Out-Null
@@ -13,31 +20,10 @@ function Log($msg) {
     Add-Content $LogFile $line
 }
 
-Log "=== Weekly HCP → RAG sync started ==="
+Log "=== Weekly brain-vault re-ingest started ==="
 
-# 1. Export customers
-Log "Exporting customers..."
-npx tsx src/hcp/export-customers.ts 2>&1 | Tee-Object -Append -FilePath $LogFile
-if ($LASTEXITCODE -ne 0) { Log "ERROR: customer export failed"; exit 1 }
-bash scripts/push-customers.sh 2>&1 | Tee-Object -Append -FilePath $LogFile
-if ($LASTEXITCODE -ne 0) { Log "ERROR: customer push failed"; exit 1 }
-
-# 2. Export jobs (all statuses — scheduled, completed, in progress)
-Log "Exporting jobs..."
-npx tsx src/hcp/export-jobs.ts 2>&1 | Tee-Object -Append -FilePath $LogFile
-if ($LASTEXITCODE -ne 0) { Log "ERROR: jobs export failed"; exit 1 }
-bash scripts/push-jobs.sh 2>&1 | Tee-Object -Append -FilePath $LogFile
-if ($LASTEXITCODE -ne 0) { Log "ERROR: jobs push failed"; exit 1 }
-
-# 3. Export price book (services + materials)
-Log "Exporting price book..."
-npx tsx src/hcp/export-pricebook.ts 2>&1 | Tee-Object -Append -FilePath $LogFile
-if ($LASTEXITCODE -ne 0) { Log "ERROR: price book export failed"; exit 1 }
-bash scripts/push-pricebook.sh 2>&1 | Tee-Object -Append -FilePath $LogFile
-if ($LASTEXITCODE -ne 0) { Log "ERROR: price book push failed"; exit 1 }
-
-# 4. Re-ingest the Obsidian brain vault into agent-os memory.
-# Non-fatal: a failure here logs a warning but doesn't block the HCP sync above.
+# Re-ingest the Obsidian brain vault into agent-os memory.
+# Non-fatal: a failure here logs a warning rather than failing the run.
 Log "Re-ingesting brain vault into agent-os memory..."
 $AgentOsDir = "C:\Workspace\Infrastructure\agent-os"
 Push-Location $AgentOsDir
