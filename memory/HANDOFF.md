@@ -1,8 +1,8 @@
 # Handoff — HCP Sync AIWA Relocation
 
-**Status as of 2026-07-28:** `sync-estimates` is relocated and live. `hcp-catalog-sync` — the price
-book, customers, and estimates job — is **built, tested, and committed, but NOT deployed.** Your
-first job is to deploy it. Read "Start Here" and go.
+**Status as of 2026-07-28:** `sync-estimates` is relocated and live. `hcp-catalog-sync` is
+**installed on AIWA and has run successfully once, by hand. Its timer is NOT enabled** — that is
+the only step left, and it is waiting on Carter. Read "Start Here" and go.
 
 ---
 
@@ -28,31 +28,52 @@ call `/alpha/jobs`. The name is historical and deliberately kept. It runs on the
 systemd timer, publishes to Qdrant over localhost, and touches no key at all. The PC's PM2 trigger
 for it is deleted. That eliminated **2 of the key's uses**.
 
-**`hcp-catalog-sync` is built but not deployed.** It exports the price book, customers, and — for
-the first time anywhere — real HCP estimates, and publishes all three CSVs into the RAG ingest
-directory. The five PC-side publish scripts it replaces have been **deleted** from this repo, so
-the PC can no longer do this work at all. That accounts for **5 more of the key's uses**, but only
-once the job is actually running on AIWA.
+**`hcp-catalog-sync` is installed and proven, but not yet scheduled.** It exports the price book,
+customers, and — for the first time anywhere — real HCP estimates, and publishes all three CSVs
+into the RAG ingest directory. The five PC-side publish scripts it replaces have been **deleted**
+from this repo, so the PC can no longer do this work at all. That accounts for **5 more of the
+key's uses**, but the work only actually happens on a schedule once the timer is enabled.
 
-### What to do next — deploy `hcp-catalog-sync`
+Steps 1–4 of the deployment were completed on 2026-07-28 (see "Deployment result" below). The
+mav-rag ingest was rebuilt with the `estimate` branch, the bundle and env file were installed under
+`/opt/hcp-catalog-sync/`, and one manual run succeeded end to end.
 
-Everything is committed on branch `sync-estimates-aiwa`. Nothing has been installed on AIWA.
-Follow `docs/AIWA-DEPLOY-catalog-sync.md` end to end; it is written for exactly this state. The
-order matters:
+### What to do next — enable the timer
 
-1. **Apply the mav-rag ingest change first** — `deploy/mav-rag/README.md`. Without it the ingest
-   has no `estimate` branch and files every estimate row as a customer. This is a container
-   **rebuild**, not a restart: `/opt/mav-rag/docker-compose.yml` declares `build: ./ingest`, so
-   `docker restart` silently keeps running the old code.
-2. **Build the bundle** — `npm run build:sync-catalog` → `dist/sync-catalog.mjs` (gitignored).
-3. **Install under `/opt/hcp-catalog-sync/`** with the env file, transferred through Orca and
-   sha256-verified. It shares the existing job's cookie file on purpose.
-4. **Run it manually once**, then enable the timer (Sundays 04:30 — deliberately an hour after the
-   03:30 jobs timer, which re-embeds for minutes into the same ingest directory).
-5. **Verify Qdrant** — `type == "estimate"` should appear (~948 option rows); `type == "job"` must
-   be **unchanged**.
+The only remaining step is **section 8 of `docs/AIWA-DEPLOY-catalog-sync.md`**: install
+`hcp-catalog-sync.timer` (Sundays 04:30 — deliberately an hour after the 03:30 jobs timer, which
+re-embeds for minutes into the same ingest directory) and `systemctl enable --now` it. The timer
+unit file has deliberately **not** been copied to `/etc/systemd/system/` — only the `.service` unit
+is installed, so nothing can fire on a schedule by accident.
 
-Every state-changing step in that list needs Carter's explicit approval at the moment you do it.
+That step changes live state and needs Carter's explicit approval at the moment you do it.
+
+### Deployment result — 2026-07-28
+
+Manual run via `systemctl start hcp-catalog-sync.service`, `Result=success`, `ExecMainStatus=0`:
+
+```
+  OK    Price book: 267 rows (195 services + 72 materials) → pricebook.csv
+  OK    Customers: 973 customers → customers.csv
+  OK    Estimates: 810 estimates / 948 options (902 with line items) → estimates.csv
+```
+
+The rebuilt ingest picked all three up on its own and archived them, skipping nothing:
+
+```
+13:30:36 Upserted 267 price book items from pricebook.csv (skipped 0)
+13:34:31 Upserted 973 rows from customers.csv
+13:38:54 Upserted 948 estimate options from estimates.csv (skipped 0)
+```
+
+Qdrant after the run — `grizzly_hcp` total 3151, which is exactly `estimate` 948 + `job` 1073 +
+`customer` 1130, so no points fall outside those three types. `pricebook` collection 395.
+
+**Caveat on the `job`-unchanged check:** only the *collection total* (2120) was captured before the
+run, not per-type counts, so the runbook's "`job` must be unchanged" check could not be verified by
+comparison. What *was* verified is stronger in one respect and weaker in another: the ingest log for
+the run window contains **no delete operation and no job-typed operation at all** — only the three
+upserts above. Capture per-type baselines before the next run so the comparison is available.
 
 ### Then: the remaining key consumers
 
@@ -178,10 +199,10 @@ The standard the last phase was held to. Match it.
 | Payload | `/opt/hcp-estimates-sync/` — `sync-estimates.mjs`, `hcp-estimates-sync.env`, `secrets/hcp-cookies.json` |
 | Service | `inactive` (correct — oneshot at rest) |
 | Host TZ | `America/Chicago` (CDT, -0500) |
-| Qdrant | `grizzly_hcp` at 2120 points, `pricebook` at 392, green |
+| Qdrant | `grizzly_hcp` at 3151 points (`estimate` 948 + `job` 1073 + `customer` 1130), `pricebook` at 395, green. Was 2120 / 392 before the 2026-07-28 catalog run. |
 | Node | `/usr/bin/node`, v22.23.1 |
-| `hcp-catalog-sync` | **Not installed.** No unit, no `/opt/hcp-catalog-sync/`, no timer. |
-| mav-rag ingest | **Unmodified.** `/opt/mav-rag/ingest/main.py` still matches `main.py.snapshot-20260728` (sha256 `fd9054ae…87c21e3`). `/opt/mav-rag` is not a git repo. |
+| `hcp-catalog-sync` | **Installed, run once by hand, timer NOT enabled.** `/opt/hcp-catalog-sync/sync-catalog.mjs` (sha256 `93e8d175…97e2097dfd`) + `hcp-catalog-sync.env` (640). `/etc/systemd/system/hcp-catalog-sync.service` only — **no `.timer` file exists on the host**, so it cannot fire on a schedule. Last manual run 2026-07-28, `Result=success`. |
+| mav-rag ingest | **Rebuilt with the `estimate` branch.** `/opt/mav-rag/ingest/main.py` = sha256 `7af75e7c…86a9a88fb3`, verified inside the running container with `docker exec mav-rag-ingest sha256sum /app/main.py`. Rollback copy at `/opt/mav-rag/ingest/main.py.bak-20260728` (sha256 `fd9054ae…87c21e3`, matches `deploy/mav-rag/main.py.snapshot-20260728`). `/opt/mav-rag` is not a git repo. |
 
 ### On CartersPC
 
