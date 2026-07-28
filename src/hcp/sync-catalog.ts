@@ -16,6 +16,10 @@ import { runPricebookExport } from './export-pricebook.js';
 import { runCustomersExport } from './export-customers.js';
 import { runEstimatesExport } from './export-estimates.js';
 import { deletePointsByType, publishCsv, resolveRagConfig } from './rag-publish.js';
+import { checkHcpAuth } from './preflight-auth.js';
+
+/** Distinctive marker the Hermes monitor greps the journal for. */
+const AUTH_FAIL_MARKER = 'HCP_AUTH_PREFLIGHT_FAIL';
 
 /** Destination names in the ingest directory. The ingest keys off these. */
 const DEST_PRICEBOOK = 'pricebook.csv';
@@ -63,9 +67,22 @@ async function run() {
     process.exit(1);
   }
 
+  // Preflight: verify the HCP session before any export work.
+  // ponytail: process.exitCode + return, not process.exit(1) — a forced exit
+  // after fetch trips libuv's UV_HANDLE_CLOSING assertion on Windows and can
+  // return the NT status instead of 1. Natural drain preserves the exit code.
+  const auth = await checkHcpAuth();
+  if (!auth.ok) {
+    console.error('HCP auth preflight failed — not running any export.');
+    console.error(`${AUTH_FAIL_MARKER} ${auth.detail}`);
+    process.exitCode = 1;
+    return;
+  }
+
   console.log('HCP catalog sync');
   console.log(`  Ingest directory: ${cfg.ingestDir}`);
   console.log(`  Qdrant:           ${cfg.qdrantUrl} (collection "${cfg.collection}")`);
+  console.log(`  Session:          ok via ${auth.via}`);
 
   const results: StepResult[] = [];
 
@@ -109,11 +126,19 @@ async function run() {
 
   console.error(`\n${failed.length} of ${results.length} steps failed.`);
   if (failed.some(f => isAuthFailure(f.error ?? ''))) {
-    console.error(
-      'This looks like an expired HCP session. Run "npm run login" on the PC to\n' +
-      'refresh the saved browser session, then place the refreshed cookie file on\n' +
-      'this host through Orca and re-run.',
-    );
+    if (auth.via === 'daemon') {
+      console.error(
+        'This looks like an expired HCP session. The relogin must run on the PC\n' +
+        '(npm run relogin) — that refreshes the browser profile the MCP daemon\n' +
+        'uses. No cookie file is copied to this host. Re-run after the relogin.',
+      );
+    } else {
+      console.error(
+        'This looks like an expired HCP session. Run "npm run login" on the PC to\n' +
+        'refresh the saved browser session, then place the refreshed cookie file on\n' +
+        'this host through Orca and re-run.',
+      );
+    }
   }
   process.exit(1);
 }

@@ -6,6 +6,7 @@
   "scripts": {
     "login": "tsx src/hcp/auth.ts",
     "relogin": "tsx scripts/hcp-relogin.ts",
+    "preflight-auth": "tsx src/hcp/preflight-cli.ts",
     "estimate": "tsx src/automations/estimates/from-proposal.ts",
     "templates": "tsx src/hcp/list-templates.ts",
     "export-pricebook": "tsx src/hcp/export-pricebook.ts",

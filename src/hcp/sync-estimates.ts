@@ -13,6 +13,10 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { hcpGet } from './client.js';
 import { deleteJobPoints, publishCsv, resolveRagConfig } from './rag-publish.js';
+import { checkHcpAuth } from './preflight-auth.js';
+
+/** Distinctive marker the Hermes monitor greps the journal for. */
+const AUTH_FAIL_MARKER = 'HCP_AUTH_PREFLIGHT_FAIL';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -94,6 +98,19 @@ async function pMap<T, R>(
 // ── Main ───────────────────────────────────────────────────────────────────
 
 async function run() {
+  // Preflight: verify the HCP session before any export work.
+  // ponytail: process.exitCode + return, not process.exit(1) — a forced exit
+  // after fetch trips libuv's UV_HANDLE_CLOSING assertion on Windows and can
+  // return the NT status instead of 1. Natural drain preserves the exit code.
+  const auth = await checkHcpAuth();
+  if (!auth.ok) {
+    console.error('HCP auth preflight failed — not running any export.');
+    console.error(`${AUTH_FAIL_MARKER} ${auth.detail}`);
+    process.exitCode = 1;
+    return;
+  }
+  console.log(`HCP auth ok via ${auth.via}`);
+
   // 1. Collect all jobs
   console.log('Fetching jobs from HCP...');
   const allJobs: HcpJob[] = [];
