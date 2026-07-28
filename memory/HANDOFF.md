@@ -116,9 +116,9 @@ These are not suggestions. The first two are the entire point of the project.
   This includes git commit messages. Write around it — say "deploy key" or "remote shell".
 - **Get explicit approval before changing live state** — any service start/stop/restart, timer
   action, unit reload, or PM2 operation. Verification and read-only inspection need no approval.
-- **Never stage `.env.bak-pre-lxc-20260721-130527`.** It is untracked, contains real credentials,
-  and sits in this repo's root. Check `git status` before every `git add`; stage files by name,
-  never `git add -A`.
+- **Stage files by name, never `git add -A`.** This repo root has held untracked credential files
+  before (`.env.bak-pre-lxc-20260721-130527`, no longer present — see Loose Ends). `.env` itself is
+  gitignored and must stay that way. Check `git status` before every `git add`.
 - **Do not develop against live state.** `/opt/hcp-estimates-sync/` on AIWA is a deployment target.
   Author changes here, commit, push, then deploy the reviewed commit.
 
@@ -292,11 +292,15 @@ weekly run.**
   (mav-rag snapshot), `b8a209c` (ingest estimate type), `f57812a` (deploy artifacts, PC publish
   scripts retired), `2ebbb46` (catalog runbook)
 - Brain vault commit: `f9b80d9` in `C:\Workspace\Active\brain`
-- `git status` should show only `?? .env.bak-pre-lxc-20260721-130527` — leave it untracked.
+- `git status` is clean as of 2026-07-28, including untracked files.
 
 ## Loose Ends (non-urgent, unrelated to the mission)
 
-- Credentials in `.env.bak-pre-lxc-20260721-130527` are worth rotating.
+- **`.env.bak-pre-lxc-20260721-130527` is no longer in the repo root**, and it was never tracked,
+  so git cannot say when or how it went. No credentials were lost with it: `.env` still carries an
+  mtime of 2026-07-21 13:05:27, the exact second the backup was named for, so the live file has not
+  been written since the copy was taken. The rotation that backup implied is still worth doing —
+  it now applies to `.env` itself.
 - Branch `backup-pre-pii-scrub-20260728` (old tip `e4b500a`) still contains the customer PII that
   was scrubbed from history. It exists as the rollback ref. Delete it once Carter is satisfied with
   the cleaned history — until then, do not push it anywhere.
