@@ -1,7 +1,8 @@
-# Handoff — sync-estimates AIWA Relocation
+# Handoff — HCP Sync AIWA Relocation
 
-**Status as of 2026-07-28: this phase is COMPLETE.** The next agent's job is the *next* phase, not
-this one. Read "Start Here" and go.
+**Status as of 2026-07-28:** `sync-estimates` is relocated and live. `hcp-catalog-sync` — the price
+book, customers, and estimates job — is **built, tested, and committed, but NOT deployed.** Your
+first job is to deploy it. Read "Start Here" and go.
 
 ---
 
@@ -22,20 +23,42 @@ This is not a cleanup task. It is the enforcement mechanism.
 
 ### What is already done
 
-`sync-estimates` — the weekly HCP estimate scraper — has been fully relocated. It now runs on the
-Proxmox host as a systemd timer, publishes to Qdrant over localhost, and touches no key at all.
-The PC's PM2 trigger for it is deleted. That eliminated **2 of the key's uses**.
+**`sync-estimates` is live.** Despite the name it is a **jobs** sync — it and `export-jobs.ts` both
+call `/alpha/jobs`. The name is historical and deliberately kept. It runs on the Proxmox host as a
+systemd timer, publishes to Qdrant over localhost, and touches no key at all. The PC's PM2 trigger
+for it is deleted. That eliminated **2 of the key's uses**.
 
-### What to do next
+**`hcp-catalog-sync` is built but not deployed.** It exports the price book, customers, and — for
+the first time anywhere — real HCP estimates, and publishes all three CSVs into the RAG ingest
+directory. The five PC-side publish scripts it replaces have been **deleted** from this repo, so
+the PC can no longer do this work at all. That accounts for **5 more of the key's uses**, but only
+once the job is actually running on AIWA.
 
-Relocate the remaining key consumers, using `sync-estimates` as the proven template. In rough
-order of ease:
+### What to do next — deploy `hcp-catalog-sync`
+
+Everything is committed on branch `sync-estimates-aiwa`. Nothing has been installed on AIWA.
+Follow `docs/AIWA-DEPLOY-catalog-sync.md` end to end; it is written for exactly this state. The
+order matters:
+
+1. **Apply the mav-rag ingest change first** — `deploy/mav-rag/README.md`. Without it the ingest
+   has no `estimate` branch and files every estimate row as a customer. This is a container
+   **rebuild**, not a restart: `/opt/mav-rag/docker-compose.yml` declares `build: ./ingest`, so
+   `docker restart` silently keeps running the old code.
+2. **Build the bundle** — `npm run build:sync-catalog` → `dist/sync-catalog.mjs` (gitignored).
+3. **Install under `/opt/hcp-catalog-sync/`** with the env file, transferred through Orca and
+   sha256-verified. It shares the existing job's cookie file on purpose.
+4. **Run it manually once**, then enable the timer (Sundays 04:30 — deliberately an hour after the
+   03:30 jobs timer, which re-embeds for minutes into the same ingest directory).
+5. **Verify Qdrant** — `type == "estimate"` should appear (~948 option rows); `type == "job"` must
+   be **unchanged**.
+
+Every state-changing step in that list needs Carter's explicit approval at the moment you do it.
+
+### Then: the remaining key consumers
 
 | Consumer | Notes |
 |---|---|
-| `sync-pricebook` | Closest sibling to `sync-estimates`; same publish path. Do this one first. |
-| `push-customers` / `push-jobs` / `push-pricebook` | Share the `rag-publish.ts` mechanism already made switchable. |
-| `Watch-HCPExports` | A PC-side file watcher. Consider whether it is still needed once producers run on AIWA. |
+| `Watch-HCPExports` | A PC-side file watcher. Once `hcp-catalog-sync` runs on AIWA, nothing produces the files it watches — check whether it is simply dead. |
 | `index-docs` | Check whether its inputs even originate on the PC any more. |
 | `sync-from-proxmox.ps1` | Pulls *from* AIWA. Likely needs a different answer than relocation. |
 
@@ -70,9 +93,11 @@ this repo.
 |---|---|---|
 | 1 | `memory/JOURNAL.md` → entries **2026-07-25** and **2026-07-27/28** | The full narrative of the relocation and cutover, including two corrections that will bite you if you don't know them. The 07-27/28 entry is the important one. |
 | 2 | `C:\Workspace\Active\brain\projects\grizzly-hcp.md` → sections **2026-07-25** and **2026-07-28** | Brain vault project note. The 2026-07-28 section carries the generalizable findings (PM2 cron semantics, Windows batch traps) and the current live state. |
-| 3 | `docs/AIWA-DEPLOY-sync-estimates.md` | Operator runbook. **Section 7.0** = PM2 retirement, **Section 10** = rollback. This is the template to copy for the next consumer. |
-| 4 | `docs/superpowers/specs/2026-07-24-sync-estimates-aiwa-relocation-design.md` | Design spec — the architectural rationale for the whole pattern. |
-| 5 | `C:\Workspace\Active\brain\knowledge\infrastructure.md` | Host IPs, keys, services. Read it rather than memorizing from any handoff. |
+| 3 | `docs/AIWA-DEPLOY-catalog-sync.md` | **The runbook for the work in front of you.** Twelve numbered sections, prerequisite first, rollback last. |
+| 4 | `deploy/mav-rag/README.md` | The ingest change and its rollback. mav-rag is **not** under version control on the host — `deploy/mav-rag/main.py.snapshot-20260728` is the only copy of the original that exists anywhere. |
+| 5 | `docs/AIWA-DEPLOY-sync-estimates.md` | Operator runbook for the already-live jobs sync. **Section 7.0** = PM2 retirement, **Section 10** = rollback. This was the template the catalog runbook was built from. |
+| 6 | `docs/superpowers/specs/2026-07-24-sync-estimates-aiwa-relocation-design.md` | Design spec — the architectural rationale for the whole pattern. |
+| 7 | `C:\Workspace\Active\brain\knowledge\infrastructure.md` | Host IPs, keys, services. Read it rather than memorizing from any handoff. |
 
 Also relevant, if the enforcement side of the mission is in scope for your session:
 `C:\Workspace\Shared\Agents\Hermes-Supervisor` — the cross-harness guard work lives there,
@@ -153,7 +178,10 @@ The standard the last phase was held to. Match it.
 | Payload | `/opt/hcp-estimates-sync/` — `sync-estimates.mjs`, `hcp-estimates-sync.env`, `secrets/hcp-cookies.json` |
 | Service | `inactive` (correct — oneshot at rest) |
 | Host TZ | `America/Chicago` (CDT, -0500) |
-| Qdrant | `grizzly_hcp` at 2120 points, green |
+| Qdrant | `grizzly_hcp` at 2120 points, `pricebook` at 392, green |
+| Node | `/usr/bin/node`, v22.23.1 |
+| `hcp-catalog-sync` | **Not installed.** No unit, no `/opt/hcp-catalog-sync/`, no timer. |
+| mav-rag ingest | **Unmodified.** `/opt/mav-rag/ingest/main.py` still matches `main.py.snapshot-20260728` (sha256 `fd9054ae…87c21e3`). `/opt/mav-rag` is not a git repo. |
 
 ### On CartersPC
 
@@ -162,6 +190,8 @@ The standard the last phase was held to. Match it.
 | PM2 `sync-estimates-weekly` | **DELETED.** Dump went 15 → 13 entries, no `cron_restart` remaining |
 | Dump backup | `C:\ProgramData\pm2\dump.pm2.bak-pre-sync-estimates-delete-20260727` (565,917 bytes, 15 entries) |
 | Rollback | **Recreate** the PM2 entry — full definition in Section 10 of the runbook. `pm2 start` will NOT work; the entry no longer exists. |
+| Publish scripts | `sync-pricebook.sh`, `push-pricebook.sh`, `push-customers.sh`, `push-jobs.sh`, `weekly-sync-pricebook.ps1` — **deleted in `f57812a`**, npm entries removed. Restoring them means `git checkout f57812a~1 -- <paths>`, not re-running a script. |
+| `weekly-sync-all.ps1` | Rewritten down to the brain-vault ingest step only; its stale `$ProjectDir` is fixed. It no longer needs the key. Its Task Scheduler entry still exists and is still wanted. |
 
 Note: `pm2 save` also pruned `customer-chat-server` from the dump. That is expected, not a loss —
 that service was already relocated to AIWA as part of Carter's ongoing PM2 migration. Expect more
@@ -256,13 +286,19 @@ weekly run.**
 
 - Repo: `C:\Workspace\Active\grizzly-hcp`
 - Branch: `sync-estimates-aiwa`, pushed to `https://github.com/Maverick-Core-Software/grizzly-hcp.git`
-- Relevant commits: `790998f` (test run + PM2 retirement), `0220317` (timer cutover),
-  `06dbe06` (hardened path validation + journal)
+- Relevant commits, jobs-sync phase: `790998f` (test run + PM2 retirement), `0220317` (timer
+  cutover), `06dbe06` (hardened path validation + journal)
+- Relevant commits, catalog-sync phase: `b355d3e` (sync-catalog entry point + bundle), `af901b0`
+  (mav-rag snapshot), `b8a209c` (ingest estimate type), `f57812a` (deploy artifacts, PC publish
+  scripts retired), `2ebbb46` (catalog runbook)
 - Brain vault commit: `f9b80d9` in `C:\Workspace\Active\brain`
 - `git status` should show only `?? .env.bak-pre-lxc-20260721-130527` — leave it untracked.
 
 ## Loose Ends (non-urgent, unrelated to the mission)
 
-- `weekly-sync-all.ps1` has a stale `$ProjectDir = "C:\Users\carte\Grizzly-HCP"` that breaks that
-  scheduled task every Sunday.
 - Credentials in `.env.bak-pre-lxc-20260721-130527` are worth rotating.
+- Branch `backup-pre-pii-scrub-20260728` (old tip `e4b500a`) still contains the customer PII that
+  was scrubbed from history. It exists as the rollback ref. Delete it once Carter is satisfied with
+  the cleaned history — until then, do not push it anywhere.
+- `/opt/mav-rag` on AIWA is not a git repository. Putting it under version control would remove the
+  need for the snapshot-file arrangement in `deploy/mav-rag/`.

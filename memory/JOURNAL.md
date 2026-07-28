@@ -63,3 +63,65 @@ Two corrections worth carrying forward:
 Remaining deploy-key consumers (not yet relocated): `sync-pricebook`, `push-customers`/`jobs`/
 `pricebook`, `Watch-HCPExports`, `index-docs`, `sync-from-proxmox.ps1`. The key cannot be retired
 until those are handled.
+
+---
+
+## 2026-07-28 — catalog + estimates sync built
+
+Built `hcp-catalog-sync`, the second job in the deploy-key relocation. It exports the HCP price
+book, customers, and estimates and publishes all three into the RAG ingest directory on AIWA.
+**Built and committed, not deployed** — installing the unit and applying the mav-rag ingest change
+are separate human-approved steps that have not happened.
+
+What was added:
+
+- `src/hcp/export-estimates.ts` (`npm run export-estimates`) — the first real HCP estimates export
+  that has ever existed here. Pulls `/beta/estimates`, then per-option line items from
+  `/alpha/estimates/{option}/line_items`. ~810 estimates producing ~948 CSV rows, one per option,
+  carrying `outcome` (open/won/lost) and per-option totals.
+- `src/hcp/sync-catalog.ts` (`npm run sync-catalog`, `npm run build:sync-catalog` ->
+  `dist/sync-catalog.mjs`) — one self-contained bundle running all three exports. The estimates
+  step deletes Qdrant points of `type = "estimate"` before writing, so re-runs replace rather than
+  accumulate; it never touches `type = "job"`.
+- `export-pricebook.ts` and `export-customers.ts` became importable functions with env-overridable
+  output paths. `publishCsv` takes an optional destination filename and refuses non-default names
+  on the remote target. `deleteJobPoints` generalized to `deletePointsByType`.
+- `deploy/aiwa/hcp-catalog-sync.{service,timer,env.example}` — weekly oneshot, Sundays 04:30
+  America/Chicago, install root `/opt/hcp-catalog-sync/`, sharing the existing job's cookie file so
+  one session refresh fixes both jobs.
+- `deploy/mav-rag/` — a byte-exact snapshot of the live ingest plus a modified copy adding an
+  `estimate` type, and a README covering apply/verify/rollback.
+- `docs/AIWA-DEPLOY-catalog-sync.md` — twelve-section operator runbook.
+
+Deleted: `scripts/sync-pricebook.sh`, `push-pricebook.sh`, `push-customers.sh`, `push-jobs.sh`,
+`weekly-sync-pricebook.ps1`, and their npm entries. `weekly-sync-all.ps1` was rewritten down to the
+brain-vault ingest step. Rollback for these is `git checkout f57812a~1 -- <paths>`, not re-running
+a script — the scripts no longer exist.
+
+Findings worth keeping:
+
+- **`sync-estimates` never exported estimates.** It and `export-jobs.ts` both call `/alpha/jobs`
+  with the same header; sync-estimates is a strict superset. The deployed `hcp-estimates-sync` unit
+  is a jobs sync. The name is historical and was deliberately left alone, so both runbooks now say
+  so explicitly. Real estimates were not exported by anything until this build.
+- **The weekly scheduled task had been failing every Sunday** (last result 1) because
+  `weekly-sync-all.ps1` pointed at a project directory that does not exist. The price book in the
+  RAG had therefore not refreshed since 2026-06-30. Fixed as part of this work.
+- **`/opt/mav-rag` is not a git repository.** The ingest image is *built* from source
+  (`build: ./ingest` in its compose file), so `docker restart mav-rag-ingest` silently keeps
+  running the old code — a rebuild is required. The runbook draft said "restart"; that was caught
+  by reading the compose file rather than trusting the plan, and corrected.
+- **Transferring a file off AIWA within the Orca-only rule.** `terminal read` returns no output for
+  remote environments and `terminal show`'s preview is hard-capped at 300 characters, so there is
+  no obvious way to read a 21KB file back. Compressing first solved it: `gzip -9c | base64 -w0`
+  reduced 21,636 bytes to 6,199 characters, retrieved in 26 scripted preview reads with
+  marker-delimited extraction and verified byte-exact by sha256. No listening socket, no remote
+  shell, no process started on the host.
+- **The estimate branch in `detect_type` is checked before the job branch on purpose.** The
+  estimates export also carries a customer name and a total, and the jobs sync deletes every point
+  with `type == "job"` — so a future column change must not let estimates fall through. Verified
+  with an adversarial header carrying both sets of columns.
+
+Remaining deploy-key consumers: `Watch-HCPExports`, `index-docs`, `sync-from-proxmox.ps1`. The
+five publish scripts are gone from the repo but their replacement is not yet running on AIWA, so
+their share of the key's uses is only retired once `hcp-catalog-sync` is deployed.
