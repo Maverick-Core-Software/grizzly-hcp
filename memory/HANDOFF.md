@@ -114,20 +114,27 @@ real fires are:
 | `hcp-estimates-sync` (jobs) | **Sun 2026-08-02 03:31 CDT** |
 | `hcp-catalog-sync` (price book, customers, estimates) | **Sun 2026-08-02 ~04:33 CDT** |
 
-A scheduled verification task is registered for the **jobs** timer and will run itself — you do not
-need to set it up:
+**One scheduled task verifies both timers** and will run itself — you do not need to set it up:
 
 - **`C:\Users\carte\.claude\scheduled-tasks\verify-hcp-estimates-sync-timer\SKILL.md`**
-- Fires once at **2026-08-02 03:35 CDT**, then auto-disables.
-- Caveat: scheduled tasks only run while the Claude app is open. If it was closed at 03:35, the
+  (the directory name predates the merge; it now covers both jobs)
+- Fires once at **2026-08-02 05:00 CDT**, then auto-disables.
+- Caveat: scheduled tasks only run while the Claude app is open. If it was closed at 05:00, the
   task runs on next launch — still valid, since all the evidence it reads is persistent.
 
-**There is no equivalent scheduled check for `hcp-catalog-sync`** — creating one is persistent
-configuration and was not authorised. Either ask Carter to approve one (it would need to fire after
-04:40, since the catalog run itself takes ~4 minutes and the ingest another ~5), or verify that
-first fire by hand using sections 9 and 10 of `docs/AIWA-DEPLOY-catalog-sync.md`.
+It was deliberately merged into a single post-both check rather than one per timer, because:
 
-If either check has already run by the time you read this, its result is in `memory/JOURNAL.md`.
+- **They share one HCP cookie file.** An expired session is the likeliest real failure and takes
+  out both jobs. One report names the common cause; two separate reports would not connect them.
+- **Only a combined check can verify the one-hour gap held.** That gap exists so the two ingests
+  never overlap in the same directory — and a check running at 03:35 fires before the catalog job
+  even starts, so it structurally cannot observe the interaction.
+
+05:00 rather than 04:45: the catalog timer can fire as late as 04:35:00 with its 300s jitter, and
+the full pipeline took 9.5 minutes on 2026-07-28 (13:29:27 → 13:38:54), so a worst case finishes
+~04:44:30. 04:45 would leave 30 seconds of margin.
+
+If that check has already run by the time you read this, its result is in `memory/JOURNAL.md`.
 If it reported FAIL, **that takes priority over starting new relocation work.**
 
 ---
