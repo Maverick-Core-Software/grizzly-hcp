@@ -90,11 +90,27 @@ logic that already exists in `grizzly-hcp`.
    - `path` must start with `/`. Reject absolute URLs, protocol-relative `//`, and any
      `..` segment.
    - `path` must match one of an allowlisted set of prefixes. Define the allowlist as a
-     module-level constant array so it is auditable in one place. Seed it with the prefixes
-     the exporters actually use — determine these by reading the four exporters in
-     `C:\Workspace\Active\grizzly-hcp\src\hcp\` (`export-estimates.ts`, `export-customers.ts`,
-     `export-pricebook.ts`, `export-jobs.ts`) and collecting every literal path passed to
-     `hcpGet`. Do not guess; read them.
+     module-level constant array so it is auditable in one place. Seed it with the verified
+     literal prefixes the exporters + `sync-estimates.ts` pass to `hcpGet` (confirmed by
+     reading all five files):
+     - `/alpha/estimates` — export-estimates line-item fetch (`/alpha/estimates/{id}/line_items`)
+     - `/beta/estimates` — export-estimates paginated list (`/beta/estimates?...`). **Distinct
+       from `/alpha/estimates`; do not collapse them** — export-estimates uses `/beta/` for the
+       list and `/alpha/` for line items.
+     - `/alpha/customers` — export-customers
+     - `/alpha/pricebook` — export-pricebook (covers `/services`, `/materials`, `/industries`,
+       `/categories`, `/material_categories`)
+     - `/alpha/jobs` — export-jobs + sync-estimates (list + `/alpha/jobs/{id}/line_items`)
+
+     All five are static literals (query strings and path params are dynamic; the prefixes
+     are not).
+
+     **Scope constraint:** `HCP_VIA_MCP=true` is set ONLY on the AIWA sync host, where this
+     five-prefix set is the complete `hcpGet` surface. Other `hcpGet` callers in the repo do
+     not run on AIWA (`estimates.ts` → `/api/estimates/{id}`, `/alpha/estimate_templates/...`;
+     `src/agent/tools/reads/*` → `/pro/jobs`, `/pro/estimates`) and stay on the direct cookie
+     path. If the flag is ever set elsewhere, expand the allowlist to cover every `hcpGet`
+     prefix in the repo first — the export set is not sufficient in a broader environment.
    - The method is hardcoded GET. There is no method argument.
 
 3. **Register** the new tool module wherever the other `src/tools/*.ts` modules are
@@ -327,11 +343,53 @@ docs: record HCP daemon credential consolidation
 
 ---
 
+## Operator Session O2 — Deploy + enable the daemon route on AIWA/CT102
+
+> **NOT dispatched to Qwen.** Live-state operations on AIWA and CT102 requiring Carter's
+> explicit per-item consent and an elevated shell. Listed here so the plan is complete.
+> Run after Sessions 1–4 verify and **before O1's PC daemon removal** — the sync jobs must
+> be proven on the daemon route before any PC remnant is touched.
+
+This is the step that actually achieves the plan's goal. Sessions 1–4 build the code; without
+this operator step the AIWA weekly jobs keep using `auth/hcp-cookies.json`, because (verified
+on aiwa-host 2026-07-28) both sync env files currently set `HCP_COOKIES_FILE` and none of
+`HCP_VIA_MCP` / `HCP_MCP_URL` / `HCP_MCP_TOKEN`. Reachability is already fine: aiwa-host
+reaches `192.168.1.14:7332` (TCP + HTTP 401 bearer-gate confirmed).
+
+1. **Build and deploy the daemon** (repo `housecall-pro-mcp`) to CT102: `npm run build`,
+   ship `dist/` into the CT102 `hcp-mcp.service` working tree, restart `hcp-mcp.service`.
+   Confirm `http://192.168.1.14:7332/` still returns 401 to an anonymous probe.
+2. **Build and deploy the grizzly sync bundles** to aiwa-host: `npm run build:sync-catalog`
+   and `npm run build:sync-estimates`, then ship `dist/sync-catalog.mjs` →
+   `/opt/hcp-catalog-sync/` and `dist/sync-estimates.mjs` → `/opt/hcp-estimates-sync/`.
+   These bundles carry the new `hcpGet` daemon branch and the preflight call.
+3. **Provision `HCP_MCP_TOKEN` to aiwa-host** via a secure channel (Carter's consent; never
+   committed, never printed, never pasted into chat). Same token CT102's daemon validates.
+4. **Add to BOTH env files** (`/opt/hcp-estimates-sync/hcp-estimates-sync.env` and
+   `/opt/hcp-catalog-sync/hcp-catalog-sync.env`):
+   - `HCP_VIA_MCP=true`
+   - `HCP_MCP_URL=http://192.168.1.14:7332/`
+   - `HCP_MCP_TOKEN=<provisioned value>`
+
+   Leave the existing `HCP_COOKIES_FILE` line in place for now — it is harmless fallback
+   (the direct path is dead code while `HCP_VIA_MCP=true`). Remove it only after step 6.
+5. **Verify before the next weekly fire:** run the preflight on aiwa-host against the
+   deployed bundle (env sourced from the file). Expect exit 0 and the `ok via=daemon`
+   summary. An exit 1 with `HCP_AUTH_PREFLIGHT_FAIL` means abort and recheck token / URL /
+   daemon health before the timer fires.
+6. **Watch the first weekly fire** after the flip (Sun 03:34 / 04:34 CDT timers). Confirm
+   both complete and the journals show no `HCP_AUTH_PREFLIGHT_FAIL`. Only after a clean
+   weekly fire is the cookie file truly dead on AIWA — then remove `HCP_COOKIES_FILE` from
+   both env files.
+
+---
+
 ## Operator Session O1 — PC remnant cleanup and relogin enable
 
 > **NOT dispatched to Qwen.** These are live-state operations on Carter's PC requiring his
 > explicit per-item consent and an elevated shell. Listed here so the plan is complete.
-> Run only after Sessions 1–4 verify.
+> Run after Sessions 1–4 verify **AND after O2 has proven the daemon route on AIWA** — do
+> not remove the PC daemon until the AIWA sync jobs are confirmed running through CT102.
 
 **Sequencing matters:** the relogin script talks to a daemon on `127.0.0.1:7332`. Do the
 relogin decision before deleting the PC daemon.
@@ -354,4 +412,18 @@ relogin decision before deleting the PC daemon.
 
 ## Revisions
 
-_(none yet)_
+**2026-07-28 — orchestrator verification pass (read-only; did not execute):**
+- Claims 2–8 verified by direct file/state inspection; all hold.
+- Claim 1 (live reachability): reachability **CONFIRMED** (TCP `CONNECT_OK` + HTTP 401
+  bearer-gate from aiwa-host to `192.168.1.14:7332`). But `HCP_MCP_URL`, `HCP_MCP_TOKEN`,
+  and `HCP_VIA_MCP` are **ABSENT** from both AIWA sync env files, which still set
+  `HCP_COOKIES_FILE`. The plan as previously written built the code but had no operator
+  step to flip AIWA onto the daemon route — so the stated goal would not have been reached.
+  Added **Operator Session O2** to deploy + flip the env. This is the load-bearing change.
+- Session 1 allowlist: enumerated the five verified prefixes explicitly — including
+  `/beta/estimates` (export-estimates uses `/beta/` for its list and `/alpha/` for line
+  items; collapsing them would break the Sunday estimates export) — and added the
+  `HCP_VIA_MCP=true` is-AIWA-only scope constraint.
+- O1 re-sequenced to run after O2 (do not remove the PC daemon until AIWA is proven on CT102).
+- No changes to Sessions 1–4 code tasks; they are sound as written. Companion Plan 2
+  (Hermes-Supervisor) untouched and out of scope.
