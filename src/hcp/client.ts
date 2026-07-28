@@ -74,7 +74,14 @@ async function request(method: string, path: string, body?: unknown): Promise<gl
   return res;
 }
 
+const _HCP_VIA_MCP = process.env.HCP_VIA_MCP === "true";
+
 export async function hcpGet<T>(path: string): Promise<T> {
+  if (_HCP_VIA_MCP) {
+    const { apiGet } = await import("./mcp-client.js");
+    return apiGet<T>(path);
+  }
+
   const res = await request('GET', path);
   if (!res.ok) throw new Error(`HCP GET ${path} → ${res.status}: ${await res.text()}`);
   return res.json();

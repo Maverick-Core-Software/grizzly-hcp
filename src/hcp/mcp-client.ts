@@ -142,6 +142,14 @@ export async function getJobNotes(estimateUuid: string): Promise<unknown> {
 }
 
 /**
+ * Raw HCP GET through the MCP daemon. Consumers that import from client.ts get a
+ * gateway wrapper (gateway-read.ts) that picks this up when HCP_VIA_MCP=true.
+ */
+export async function apiGet<T>(path: string): Promise<T> {
+  return callTool<T>("hcp_api_get", { path });
+}
+
+/**
  * Schedule a job/request. requestId is the NUMERIC estimate/request id as a string
  * (HcpEstimate.estimateId), NOT the est_... uuid. scheduleData comes from
  * buildSchedulePayload() — never hand-build it.
