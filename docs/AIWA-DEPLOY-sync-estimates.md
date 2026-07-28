@@ -145,16 +145,48 @@ entry. Enabling the timer while the PM2 entry is still active means the estimate
 are pulled, the collection's stale points deleted, and the CSV republished twice
 every Sunday.
 
-Stop the PM2 entry **before** enabling the timer. This changes a running process,
-so it requires Carter's explicit approval and must use the elevated PM2 pattern —
-never user-space `pm2`:
+**`pm2 stop` does NOT work here.** An earlier revision of this section said to use
+`stop` rather than `delete`. That instruction was wrong and would have left the job
+firing. In PM2 7.0.3, `God.deleteCron()` is called from only two places —
+`deleteProcessId` and `restartProcessId` (which re-registers immediately after).
+`stopProcessId` never touches `God.CronJobs`. Worse, `God.registerCron()` runs
+*before* the `autostart === false` check in `God.js`, so an entry that never starts
+still has an armed cron.
+
+This entry's normal resting state is `stopped` (`autorestart: false` — it runs
+weekly, exits, and returns to `stopped`). It fired at `created_at 2026-07-26
+02:00:02` while showing `stopped`. Status is therefore **not** a usable signal for
+whether the schedule is live.
+
+Only `pm2 delete` deregisters the cron. Back up the dump first, because `pm2 save`
+overwrites it:
 
 ```bash
-"/c/Program Files/gsudo/Current/gsudo.exe" cmd /c "set PM2_HOME=C:\ProgramData\pm2 && pm2 stop sync-estimates-weekly && pm2 save"
+copy /Y "C:\ProgramData\pm2\dump.pm2" "C:\ProgramData\pm2\dump.pm2.bak-<date>"
 ```
 
-Use `pm2 stop`, not `pm2 delete` — keeping the entry in the dump is what makes the
-rollback in Section 10 a one-command operation.
+Then delete and persist. Note two Windows gotchas, both hit during the real cutover:
+
+- `gsudo cmd /c "a && b"` can drop into an interactive shell instead of running the
+  chain. Put the commands in a `.cmd` file and run `gsudo ./file.cmd` instead.
+- `pm2` is a `.cmd` shim, so a batch file must use `call pm2 save`. Without `call`,
+  control transfers and every later line is silently skipped — the delete ran, the
+  save never did, and `dump.pm2` was left stale.
+
+```bat
+@echo off
+set PM2_HOME=C:\ProgramData\pm2
+call pm2 delete sync-estimates-weekly
+call pm2 save
+```
+
+Verify against the dump, not the CLI table: reread `C:\ProgramData\pm2\dump.pm2`
+and confirm no entry has a `cron_restart` field.
+
+**Completed 2026-07-27 22:59 (delete) / 23:03 (save).** Dump went 15 → 13 entries;
+`sync-estimates-weekly` absent; no `cron_restart` remains. `pm2 save` also dropped
+`customer-chat-server`, which was present in the dump but not in the live process
+list — it is preserved in the backup above.
 
 ### 7.1 Install the units
 
@@ -247,11 +279,36 @@ sudo rm /etc/systemd/system/hcp-estimates-sync.service
 sudo systemctl daemon-reload
 ```
 
-**2. Restart the PC-side PM2 entry** (requires Carter's explicit approval):
+**2. Recreate the PC-side PM2 entry** (requires Carter's explicit approval).
 
-```bash
-"/c/Program Files/gsudo/Current/gsudo.exe" cmd /c "set PM2_HOME=C:\ProgramData\pm2 && pm2 start sync-estimates-weekly && pm2 save"
+The entry was deleted, not stopped (see Section 7.0), so `pm2 start <name>` will
+fail — there is no entry to start. It must be recreated from its saved definition:
+
+| Field | Value |
+| --- | --- |
+| script (`pm_exec_path`) | `C:\Workspace\Active\grizzly-hcp\node_modules\tsx\dist\cli.mjs` |
+| args | `src/hcp/sync-estimates.ts` |
+| cwd | `C:\Workspace\Active\grizzly-hcp` |
+| interpreter | `C:\Program Files\nodejs\node.exe` |
+| `cron_restart` | `0 2 * * 0` |
+| `autorestart` | `false` |
+| `exec_mode` | `fork_mode` |
+
+```bat
+@echo off
+set PM2_HOME=C:\ProgramData\pm2
+call pm2 start "C:\Workspace\Active\grizzly-hcp\node_modules\tsx\dist\cli.mjs" ^
+  --name sync-estimates-weekly ^
+  --cwd "C:\Workspace\Active\grizzly-hcp" ^
+  --cron "0 2 * * 0" ^
+  --no-autorestart ^
+  -- src/hcp/sync-estimates.ts
+call pm2 save
 ```
+
+Note this starts the job immediately as well as scheduling it. If that is not
+wanted, restore the pre-cutover dump backup and `pm2 resurrect` instead — but be
+aware that backup also reintroduces `customer-chat-server`.
 
 This restores the Sunday 02:00 schedule described in Section 7.0. Note that the
 PC path uses the passphrase-less deploy key over SSH — rolling back re-introduces

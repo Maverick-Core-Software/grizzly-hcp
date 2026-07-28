@@ -27,16 +27,45 @@ Full spec at `docs/superpowers/specs/2026-07-24-sync-estimates-aiwa-relocation-d
 
 Operator instructions at `docs/AIWA-DEPLOY-sync-estimates.md` — deploy, verify, roll back.
 
+## Cutover Status (2026-07-27)
+
+**Staged and test-run on AIWA; timer not yet enabled.**
+
+Done:
+
+- Bundle, env file, and cookies staged at `/opt/hcp-estimates-sync/` and checksum-verified
+  against the local build (`sync-estimates.mjs` sha256 `fc8f05f9…`, cookies sha256 `5e2ce512…`).
+- **Manual run succeeded 2026-07-28 03:04 UTC.** Exit 0; 1073 jobs pulled from the HCP API over
+  11 pages; CSV written at 353239 bytes — the same size the PC path produced; ingest archived it
+  to `processed/20260728_030851_estimates-enriched.csv`; Qdrant `grizzly_hcp` went 2120 → 1147
+  (stale points cleared) → back to **2120 exactly** and held. No deploy key was used anywhere
+  in the run, which was the point of the relocation.
+- **PC-side trigger retired 2026-07-27 23:03.** PM2 entry `sync-estimates-weekly` deleted and the
+  dump persisted; dump went 15 → 13 entries with no `cron_restart` remaining.
+
 ## What Is NOT Done Yet
 
-- **No deployment has happened.** The systemd units and bundle are in the repo but have not been
-  copied to `192.168.1.12` and are not active.
-- The PC-side workflow still runs unchanged — that path is the rollback plan.
-- **The PC schedule must be stopped as part of the cutover.** It is not a manual job: PM2 entry
-  `sync-estimates-weekly` (cwd `C:\Workspace\Active\grizzly-hcp`, `cron_restart: 0 2 * * 0`) runs it
-  Sundays at 02:00 America/Chicago. The AIWA timer fires Sunday 03:30, so leaving both enabled
-  double-runs the job against the `grizzly_hcp` collection every week. See Section 7.0 of
-  `docs/AIWA-DEPLOY-sync-estimates.md`. Stopping a PM2 process requires Carter's explicit approval.
+- **The systemd units are not installed.** `/etc/systemd/system/` has no `hcp-estimates-sync.*`,
+  so nothing is scheduled on AIWA. Combined with the PM2 deletion, the job currently has **no
+  schedule on either host** — it will not run again until the timer is enabled.
+- Enabling the timer requires Carter's explicit approval (Section 7.1 of the runbook).
+
+## PM2 Retirement — Why `delete`, Not `stop`
+
+`pm2 stop` would **not** have worked. In PM2 7.0.3 only `deleteProcessId` and `restartProcessId`
+call `God.deleteCron()`; `stopProcessId` never does. `God.registerCron()` also runs before the
+`autostart === false` check, so a never-started entry still has an armed cron. This entry's
+resting state *is* `stopped` (`autorestart: false`), and it fired at `created_at 2026-07-26
+02:00:02` while showing `stopped` — so status is not a usable signal for whether the schedule is
+live. Verify against `C:\ProgramData\pm2\dump.pm2`, not the CLI table.
+
+Rollback definition and the two Windows gotchas that bit during the cutover (`gsudo cmd /c "a && b"`
+dropping to an interactive shell; a batch file needing `call pm2 …` or later lines are silently
+skipped) are recorded in Sections 7.0 and 10 of `docs/AIWA-DEPLOY-sync-estimates.md`.
+
+Pre-cutover dump backup: `C:\ProgramData\pm2\dump.pm2.bak-pre-sync-estimates-delete-20260727`.
+Note `pm2 save` also dropped `customer-chat-server` from the dump — it was in the dump but not in
+the live process list. It survives only in that backup.
 
 ## Configuration
 
