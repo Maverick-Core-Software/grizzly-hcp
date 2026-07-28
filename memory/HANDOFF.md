@@ -52,19 +52,41 @@ Done:
 
 **The cutover is complete: AIWA now owns the schedule and the PC has no trigger.**
 
+## Hardened Path Validated (2026-07-28)
+
+The earlier test run was a plain `node` process, so the systemd sandbox had never actually been
+exercised. Since the PC fallback is gone, a sandbox failure would have surfaced only as a silent
+miss on Sunday 03:30. `systemctl start hcp-estimates-sync.service` was run to settle it with
+evidence rather than reasoning.
+
+**Result: `Result=success`, `ExecMainStatus=0`**, 23:19:54 → 23:20:37 CDT (43s wall, 1.901s CPU,
+75.9M peak). The pipeline behaved identically to the unsandboxed run: 1073 jobs, line items on
+1065/1073, CSV 353239 bytes, Qdrant points cleared and republished.
+
+Each directive was verified live from inside the running process (`nsenter -t <pid> -m`) rather
+than assumed from the unit file:
+
+| Directive | Evidence |
+|---|---|
+| sandbox applied at all | job mount ns `4026533296` ≠ PID 1 `4026531832` |
+| `NoNewPrivileges=yes` | `/proc/<pid>/status` → `NoNewPrivs: 1` |
+| `ProtectSystem=full` | `touch /usr/_probe` and `/etc/_probe` → `Read-only file system` |
+| `ProtectHome=yes` | `/home` 0 entries; `/root` empty |
+| `PrivateTmp=yes` | `/tmp` 0 entries (host `/tmp` is not empty) |
+| required write paths | `/opt/hcp-estimates-sync` and the ingest dir both writable |
+
+Downstream confirmed: CSV mtime `23:20:37.364` matches `ExecMainExitTimestamp` exactly; ingest
+archived it to `processed/20260728_042403_estimates-enriched.csv` and drained the ingest dir;
+Qdrant `grizzly_hcp` read **2120 green on five consecutive 15s samples**, proving a settled
+plateau rather than a coincidental mid-reindex reading.
+
+Note the 43s runtime is the job alone. The ~4 minutes observed on the earlier run spanned job
+start through downstream ingest and re-embedding, which is a different measurement.
+
 ## What Is NOT Done Yet
 
-- **The hardened systemd execution path has never been exercised.** The 2026-07-28 test run was a
-  plain `node` process; it did not go through `ProtectSystem=full`, `ProtectHome=yes`,
-  `PrivateTmp=yes`, or `NoNewPrivileges=yes`. Nothing in the job obviously needs what those block
-  (it runs as root with `WorkingDirectory=/opt/hcp-estimates-sync`, and `/opt` and `/mnt` stay
-  writable under `ProtectSystem=full`), but this is unverified. Note `ProtectHome=yes` also hides
-  `/root`.
-- This matters more than it did before the cutover: **there is no PC fallback any more.** If the
-  sandbox breaks the job, the first evidence would be a silent failure on Sunday 03:30 and stale
-  RAG data until someone notices. Validate with one `systemctl start hcp-estimates-sync.service`
-  (requires Carter's approval — it performs a full live sync) and check
-  `journalctl --unit=hcp-estimates-sync.service`.
+- Nothing blocking. The timer is armed and the exact execution path it will use has been proven
+  end to end.
 
 ## PM2 Retirement — Why `delete`, Not `stop`
 
