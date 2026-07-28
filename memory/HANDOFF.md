@@ -43,12 +43,28 @@ Done:
 - **PC-side trigger retired 2026-07-27 23:03.** PM2 entry `sync-estimates-weekly` deleted and the
   dump persisted; dump went 15 → 13 entries with no `cron_restart` remaining.
 
+- **Timer installed and armed 2026-07-27 23:13 CDT.** Units copied to `/etc/systemd/system/`
+  (root:root 644; sha256 verified against the repo copies — service `74189778…`, timer `8c81ff1f…`),
+  `systemd-analyze verify` clean, `systemctl enable --now hcp-estimates-sync.timer` rc=0. State is
+  `enabled`/`active`, next elapse **Sun 2026-08-02 03:30:32 CDT**, `Persistent=yes`,
+  `RandomizedDelaySec=5min`. Host timezone confirmed `America/Chicago`. Enabling the timer did not
+  start the service (`hcp-estimates-sync.service` remained `inactive`), as intended.
+
+**The cutover is complete: AIWA now owns the schedule and the PC has no trigger.**
+
 ## What Is NOT Done Yet
 
-- **The systemd units are not installed.** `/etc/systemd/system/` has no `hcp-estimates-sync.*`,
-  so nothing is scheduled on AIWA. Combined with the PM2 deletion, the job currently has **no
-  schedule on either host** — it will not run again until the timer is enabled.
-- Enabling the timer requires Carter's explicit approval (Section 7.1 of the runbook).
+- **The hardened systemd execution path has never been exercised.** The 2026-07-28 test run was a
+  plain `node` process; it did not go through `ProtectSystem=full`, `ProtectHome=yes`,
+  `PrivateTmp=yes`, or `NoNewPrivileges=yes`. Nothing in the job obviously needs what those block
+  (it runs as root with `WorkingDirectory=/opt/hcp-estimates-sync`, and `/opt` and `/mnt` stay
+  writable under `ProtectSystem=full`), but this is unverified. Note `ProtectHome=yes` also hides
+  `/root`.
+- This matters more than it did before the cutover: **there is no PC fallback any more.** If the
+  sandbox breaks the job, the first evidence would be a silent failure on Sunday 03:30 and stale
+  RAG data until someone notices. Validate with one `systemctl start hcp-estimates-sync.service`
+  (requires Carter's approval — it performs a full live sync) and check
+  `journalctl --unit=hcp-estimates-sync.service`.
 
 ## PM2 Retirement — Why `delete`, Not `stop`
 
@@ -64,8 +80,12 @@ dropping to an interactive shell; a batch file needing `call pm2 …` or later l
 skipped) are recorded in Sections 7.0 and 10 of `docs/AIWA-DEPLOY-sync-estimates.md`.
 
 Pre-cutover dump backup: `C:\ProgramData\pm2\dump.pm2.bak-pre-sync-estimates-delete-20260727`.
-Note `pm2 save` also dropped `customer-chat-server` from the dump — it was in the dump but not in
-the live process list. It survives only in that backup.
+
+`pm2 save` also dropped `customer-chat-server` from the dump, because it was in the dump but not
+in the live process list. That is correct, not a loss: Carter has relocated that service to AIWA
+as part of an ongoing migration of PC PM2 entries. Expect further such gaps between the dump and
+the live list while that migration continues — a stale dump entry is the normal footprint of an
+already-migrated service, so re-saving the dump prunes them.
 
 ## Configuration
 
