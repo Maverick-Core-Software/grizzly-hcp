@@ -172,3 +172,60 @@ own and archived them, skipping nothing on either the price book or the estimate
 Remaining deploy-key consumers: `Watch-HCPExports`, `index-docs`, `sync-from-proxmox.ps1`.
 `Watch-HCPExports` should now be dead on its own — nothing on the PC produces the files it watches
 any more — and is the natural next target.
+
+## 2026-07-28 — HCP daemon credential consolidation (code-ready, not yet cut over)
+
+Added a second auth path for the sync exports and a preflight guard, so the cookie file stops
+being the only thing keeping the weekly runs alive. **Committed on branch `sync-estimates-aiwa`;
+nothing is deployed yet** — the daemon-side tool and the AIWA host env are a separate operator
+step pending Carter's approval. This entry records the code change; nothing here is live.
+
+Four sessions, two repos:
+
+- **Session 1 — daemon-side passthrough (separate repo
+  `C:\Workspace\Infrastructure\housecall-pro-mcp`).** Added an `hcp_api_get` tool to the CT102
+  `hcp-mcp` HTTP daemon that performs an authenticated HCP GET using the daemon's own Chrome
+  profile. Not in this repo; referenced here so the next reader knows where the session
+  actually lives.
+- **Session 2 — route reads through the daemon (`528b705`, `23ef149`).** `src/hcp/client.ts`
+  gained an `HCP_VIA_MCP` env gate: when set, `hcpGet` proxies through the daemon's
+  `hcp_api_get` tool via the new `apiGet` in `src/hcp/mcp-client.ts`; when unset it keeps the
+  original cookie-file path (`src/hcp/auth-cookies.ts`, repo default `auth/hcp-cookies.json`).
+  `src/hcp/mcp-read.check.ts` asserts both halves — that the flag-on path actually reaches the
+  daemon and that the flag-off path falls back to cookies — and was fixed (`23ef149`) to
+  terminate cleanly and assert the rollback property rather than hang.
+- **Session 3 — preflight auth check on both sync entry points (`02c0245`).**
+  `src/hcp/preflight-auth.ts` does one cheap authenticated read (`GET
+  /alpha/pricebook/industries`) through `hcpGet` and reports `{ ok, via, detail }`, where `via`
+  is `daemon` or `cookies` to match the path actually taken. `src/hcp/preflight-cli.ts` is the
+  standalone CLI (`npm run preflight-auth`); on failure it prints a line beginning exactly
+  `HCP_AUTH_PREFLIGHT_FAIL` — the contract the Hermes monitor greps the journal for — and exits
+  1 via `process.exitCode` rather than `process.exit()`. Both `sync-estimates.ts` and
+  `sync-catalog.ts` call the preflight before any export work and bail with the marker on a dead
+  session. `sync-catalog.ts`'s expired-session hint now branches on `via` (relogin on the PC
+  refreshes the daemon profile; no cookie file is copied to this host under the daemon path).
+- **Session 4 — this entry.** Documentation only: `memory/HANDOFF.md`, `memory/JOURNAL.md`,
+  and the brain vault note `C:\Workspace\Active\brain\projects\grizzly-hcp.md`.
+
+Files changed in this repo across sessions 2–4: `src/hcp/client.ts`, `src/hcp/mcp-client.ts`,
+`src/hcp/mcp-read.check.ts`, `src/hcp/preflight-auth.ts`, `src/hcp/preflight-auth.check.ts`,
+`src/hcp/preflight-cli.ts`, `src/hcp/sync-estimates.ts`, `src/hcp/sync-catalog.ts`,
+`package.json`, `memory/HANDOFF.md`, `memory/JOURNAL.md`.
+
+Findings worth keeping:
+
+- **The `HCP_VIA_MCP` gate currently covers reads only.** `hcpGet` is gated; the mutation verbs
+  in `client.ts` (`hcpPost`/`Put`/`Patch`/`Delete`/`PostForm`) still always use the cookie file.
+  The sync exports are read-only, so the daemon path covers them end to end — but the
+  estimate-builder pipeline (which POSTs estimates and line items) would not be covered without
+  also gating the mutation verbs. Worth knowing before extending the pattern.
+- **`process.exit(1)` after `fetch` is unsafe on Windows.** A forced exit while undici's
+  keepalive handles and tsx's esbuild service are mid-close trips libuv's `UV_HANDLE_CLOSING`
+  assertion and can return the NT status `0xC0000409` instead of `1` — breaking any monitor
+  that keys off the exit code. `process.exitCode = 1` plus a `return` lets the loop drain and
+  preserves the code. The preflight CLI uses the safe form.
+- **Rollback is one env var.** Unsetting `HCP_VIA_MCP` puts both sync jobs back on the cookie
+  file with no code change, and the preflight's `via` field reports which path is live so an
+  operator can confirm the rollback took. Required env on the AIWA sync host to enable the
+  daemon path: `HCP_VIA_MCP=true`, `HCP_MCP_URL`, `HCP_MCP_TOKEN` (names only — values live in
+  the env file, never in any tracked file).

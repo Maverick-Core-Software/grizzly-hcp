@@ -254,6 +254,41 @@ such dump/live gaps while that migration continues.
 
 ---
 
+### HCP credential consolidation — 2026-07-28 (code-ready, not yet cut over)
+
+A second auth path for the sync exports exists in the code on this branch but is **not yet live
+on AIWA**. The operator cutover (set the env vars on the sync host, deploy the daemon side on
+CT102) is a separate approval-gated step that has not run. This subsection describes the
+capability and the env the operator must set; until that step runs, both sync jobs continue to
+authenticate via the cookie file as documented in the tables above.
+
+- **The sync exports will authenticate through the CT102 `hcp-mcp` daemon when
+  `HCP_VIA_MCP=true`.** `src/hcp/client.ts` gates `hcpGet` on that flag: set → the read is
+  proxied through the daemon's `hcp_api_get` tool (`src/hcp/mcp-client.ts`); unset → the
+  original cookie-file path (`src/hcp/auth-cookies.ts`, repo default `auth/hcp-cookies.json`,
+  on AIWA overridden by `HCP_COOKIES_FILE`). The cookie file becomes the **fallback path only**
+  once the flag is on.
+- **Session refresh happens on the PC.** The PC's relogin task refreshes the daemon's Chrome
+  profile on CT102. No cookie file is transported to AIWA under the daemon path — the daemon
+  holds the live session itself.
+- **Both sync entry points run a preflight auth check** before any export work
+  (`src/hcp/preflight-auth.ts`, wired into `sync-estimates.ts` and `sync-catalog.ts`). On a
+  dead session they exit 1 and emit a line beginning exactly `HCP_AUTH_PREFLIGHT_FAIL`
+  followed by the detail — the contract the Hermes monitor greps the journal for. The CLI entry
+  is `npm run preflight-auth` (`src/hcp/preflight-cli.ts`).
+- **Rollback: unset `HCP_VIA_MCP`.** `hcpGet` falls back to the cookie file; the preflight
+  reports `via: cookies`; no other code change is required.
+- **Env the operator must set on the AIWA sync host to enable the daemon path** (names only —
+  token values live in the env file, never in any file under version control):
+  `HCP_VIA_MCP=true`, `HCP_MCP_URL`, `HCP_MCP_TOKEN`.
+
+Relevant commits on this branch: `528b705` (route `hcpGet` through the daemon), `23ef149`
+(terminate the check cleanly and assert the rollback property), `02c0245` (preflight + fail
+marker on both sync entry points). The daemon-side `hcp_api_get` passthrough tool itself lives
+in the **separate** repo `C:\Workspace\Infrastructure\housecall-pro-mcp`, not this one.
+
+---
+
 ## Evidence From the Completed Phase
 
 Kept for audit. Skip if you only need to start the next task.
@@ -333,7 +368,9 @@ are archived to `/mnt/samsung-sata/mav-rag/processed/` with a UTC-timestamp pref
 Browser-session cookies, not an API key. Runtime is a plain `fetch` with a `Cookie:` header.
 Expiry surfaces as a 401 and requires a manual `npm run login` (Playwright) on the PC, then
 re-copying the cookie file to AIWA. **This is the most likely real-world failure mode for the
-weekly run.**
+weekly run** — and it is the **fallback** path once `HCP_VIA_MCP=true`; see "HCP credential
+consolidation" under Current Live State for the daemon path that is code-ready but not yet
+cut over.
 
 ---
 
