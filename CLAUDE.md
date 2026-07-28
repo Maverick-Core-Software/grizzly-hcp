@@ -77,6 +77,8 @@ routing lengths, and labor hours that feed into the scope before the pipeline ru
 | `npm run intercept` | Capture HCP API calls during manual browser session |
 | `npm run watch-email` | Poll Gmail inboxes → classify → scope → create HCP estimates (long-running; PM2 `mav-email-watcher`) |
 | `npm run run` | Pull scheduled jobs from HCP |
+| `npm run export-estimates` | Export HCP estimates to CSV (one row per estimate option) |
+| `npm run build:sync-catalog` | Bundle the weekly catalog sync to `dist/sync-catalog.mjs` for AIWA deployment |
 
 ## Project Structure
 
