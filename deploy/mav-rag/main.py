@@ -1,0 +1,620 @@
+import csv
+import hashlib
+import logging
+import os
+import re
+import shutil
+import time
+import zipfile
+from datetime import datetime
+from pathlib import Path
+
+import pdfplumber
+from docx import Document as DocxDocument
+from openai import OpenAI
+from qdrant_client import QdrantClient
+from qdrant_client.models import Distance, PointStruct, VectorParams
+from watchdog.events import FileSystemEventHandler
+from watchdog.observers import Observer
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [ingest] %(message)s")
+log = logging.getLogger(__name__)
+
+HCP_DIR = Path("/data/hcp-exports")
+DOCS_DIR = Path("/data/reference-docs")
+CODING_DIR = Path("/data/coding-docs")
+PROCESSED_DIR = Path("/data/processed")
+QDRANT_HOST = os.getenv("QDRANT_HOST", "localhost")
+QDRANT_PORT = int(os.getenv("QDRANT_PORT", 6333))
+HCP_COLLECTION = "grizzly_hcp"
+DOCS_COLLECTION = "reference_docs"
+CODING_COLLECTION = "coding_docs"
+PRICEBOOK_COLLECTION = "pricebook"
+EMBED_MODEL = "text-embedding-3-small"
+EMBED_DIM = 1536
+PDF_CHUNK_CHARS = 1200
+PDF_CHUNK_OVERLAP = 200
+
+openai_client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+qdrant = QdrantClient(host=QDRANT_HOST, port=QDRANT_PORT)
+
+
+def ensure_collection(name: str):
+    existing = [c.name for c in qdrant.get_collections().collections]
+    if name not in existing:
+        qdrant.create_collection(
+            collection_name=name,
+            vectors_config=VectorParams(size=EMBED_DIM, distance=Distance.COSINE),
+        )
+        log.info("Created collection %s", name)
+
+
+def embed(text: str) -> list[float]:
+    resp = openai_client.embeddings.create(input=text, model=EMBED_MODEL)
+    return resp.data[0].embedding
+
+
+# ── HCP CSV helpers ──────────────────────────────────────────────────────────
+
+def row_to_text(row: dict, file_type: str) -> str:
+    if file_type == "customer":
+        parts = [
+            f"Customer: {row.get('name', row.get('full_name', ''))}",
+            f"Email: {row.get('email', '')}",
+            f"Phone: {row.get('mobile_number', row.get('phone', ''))}",
+            f"Address: {row.get('street', '')} {row.get('city', '')} {row.get('state', '')} {row.get('zip', '')}",
+            f"Tags: {row.get('tags', '')}",
+            f"Notes: {row.get('notes', '')}",
+        ]
+    else:
+        parts = [
+            f"Job #: {row.get('job_number', row.get('invoice_number', ''))}",
+            f"Customer: {row.get('customer_name', row.get('name', ''))}",
+            f"Date: {row.get('completed_at', row.get('invoice_date', row.get('scheduled_start', '')))}",
+            f"Status: {row.get('status', '')}",
+            f"Total: {row.get('total_amount', row.get('total', ''))}",
+            f"Line Items: {row.get('line_items', row.get('services', ''))}",
+            f"Notes: {row.get('notes', row.get('work_notes', ''))}",
+            f"Address: {row.get('service_address', '')}",
+        ]
+    return "\n".join(p for p in parts if p.split(": ", 1)[1].strip())
+
+
+def detect_type(headers: list[str]) -> str:
+    h = {col.lower().strip().replace(" ", "_") for col in headers if col}
+    # Checked before "job": the estimates export also carries a customer name and
+    # a total, so a future column change must not let it fall through to "job" —
+    # the jobs sync deletes every point with type == "job".
+    if "estimate_uuid" in h:
+        return "estimate"
+    if any(k in h for k in ("invoice_number", "job_number", "total_amount", "completed_at")):
+        return "job"
+    if "unit_of_measure" in h and not any(k in h for k in ("mobile_number", "invoice_number", "job_number")):
+        return "pricebook"
+    if "item" in h and "price" in h and "category" in h:
+        return "pricebook_materials"
+    return "customer"
+
+
+def process_pricebook_csv(path: Path, source_file: str):
+    ensure_collection(PRICEBOOK_COLLECTION)
+    with open(path, newline="", encoding="utf-8-sig") as f:
+        reader = csv.DictReader(f)
+        rows = list(reader)
+    if not rows:
+        return
+
+    log.info("Processing price book CSV %s (%d items)", path.name, len(rows))
+    points = []
+    skipped = 0
+
+    for row in rows:
+        # Normalize header names (HCP exports vary in case/spacing)
+        r = {k.lower().strip().replace(" ", "_"): v for k, v in row.items()}
+        uuid = r.get("uuid", "").strip()
+        name = r.get("name", "").strip()
+        description = r.get("description", "").strip()
+        category = r.get("category", "").strip()
+        price_str = r.get("price", "0").strip().replace("$", "").replace(",", "")
+        unit = r.get("unit_of_measure", "Each").strip()
+
+        if not uuid or not name:
+            skipped += 1
+            continue
+
+        try:
+            price = float(price_str) if price_str else 0.0
+        except ValueError:
+            price = 0.0
+
+        text = f"{name}. {description}" if description else name
+
+        uid = int(hashlib.md5(uuid.encode()).hexdigest()[:8], 16)
+        points.append(PointStruct(
+            id=uid,
+            vector=embed(text),
+            payload={
+                "uuid": uuid,
+                "name": name,
+                "description": description,
+                "price": price,
+                "category": category,
+                "unit_of_measure": unit,
+                "type": "pricebook",
+                "source": source_file,
+                "ingested_at": datetime.utcnow().isoformat(),
+            },
+        ))
+
+        if len(points) >= 50:
+            qdrant.upsert(collection_name=PRICEBOOK_COLLECTION, points=points)
+            points = []
+
+    if points:
+        qdrant.upsert(collection_name=PRICEBOOK_COLLECTION, points=points)
+    log.info("Upserted %d price book items from %s (skipped %d)", len(rows) - skipped, path.name, skipped)
+
+
+
+def process_pricebook_materials_csv(path, source_file: str):
+    """Handle HCP materials export: Category, Item, Description, Part Number, Unit, Cost, Price."""
+    from qdrant_client.models import PointStruct as PS
+    ensure_collection(PRICEBOOK_COLLECTION)
+    import csv as _csv
+    with open(path, newline="", encoding="utf-8-sig") as f:
+        rows = list(_csv.DictReader(f))
+    if not rows:
+        return
+    log.info("Processing materials CSV %s (%d rows)", path.name, len(rows))
+    points, skipped, current_cat = [], 0, ""
+    for row in rows:
+        r = {k.lower().strip().replace(" ", "_"): v for k, v in row.items() if k}
+        cat = r.get("category", "").strip() or current_cat
+        if cat:
+            current_cat = cat
+        name = r.get("description", "").strip() or r.get("item", "").strip()
+        desc = r.get("part_number", "").strip()
+        part = r.get("unit", "").strip()
+        unit = r.get("cost", "Each").strip()
+        price_str = r.get("price", "0").strip().replace("$", "").replace(",", "")
+        if not name:
+            skipped += 1
+            continue
+        try:
+            price = float(price_str) if price_str else 0.0
+        except ValueError:
+            price = 0.0
+        uuid = part if part else hashlib.md5(f"{cat}:{name}".encode()).hexdigest()[:16]
+        uid = int(hashlib.md5(uuid.encode()).hexdigest()[:8], 16)
+        text = f"{name}. {desc}" if desc else name
+        points.append(PS(id=uid, vector=embed(text), payload={
+            "uuid": uuid, "name": name, "description": desc, "price": price,
+            "category": cat, "unit_of_measure": unit, "type": "pricebook",
+            "source": source_file, "ingested_at": datetime.utcnow().isoformat(),
+        }))
+        if len(points) >= 50:
+            qdrant.upsert(collection_name=PRICEBOOK_COLLECTION, points=points)
+            points = []
+    if points:
+        qdrant.upsert(collection_name=PRICEBOOK_COLLECTION, points=points)
+    log.info("Upserted %d materials items from %s (skipped %d)", len(rows) - skipped, path.name, skipped)
+
+def estimate_row_to_text(row: dict) -> str:
+    parts = [
+        f"Estimate #: {row.get('estimate_number', '')}",
+        f"Customer: {row.get('customer_name', '')}",
+        f"Address: {row.get('service_address', '')}",
+        f"Date: {row.get('created_date', '')}",
+        f"Outcome: {row.get('outcome', '')}",
+        f"Option: {row.get('option_name', '')}",
+        f"Option Status: {row.get('option_status', '')}",
+        f"Total: {row.get('option_total', '')}",
+        f"Line Items: {row.get('line_items', '')}",
+        f"Notes: {row.get('notes', '')}",
+        f"Assigned: {row.get('assigned_pros', '')}",
+    ]
+    return "\n".join(p for p in parts if p.split(": ", 1)[1].strip())
+
+
+def process_estimates_csv(path: Path, source_file: str):
+    """Handle the weekly HCP estimates export: one row per estimate option."""
+    ensure_collection(HCP_COLLECTION)
+    with open(path, newline="", encoding="utf-8-sig") as f:
+        rows = list(csv.DictReader(f))
+    if not rows:
+        return
+    log.info("Processing estimates CSV %s (%d rows)", path.name, len(rows))
+    points, skipped = [], 0
+    for row in rows:
+        r = {k.lower().strip().replace(" ", "_"): v for k, v in row.items() if k}
+        # option_uuid is the row's identity, so re-ingesting the weekly export
+        # overwrites in place instead of duplicating. Estimates with no options
+        # still produce one row, which carries only the estimate uuid.
+        uuid = (r.get("option_uuid") or "").strip() or (r.get("estimate_uuid") or "").strip()
+        text = estimate_row_to_text(r)
+        if not uuid or not text.strip():
+            skipped += 1
+            continue
+        uid = int(hashlib.md5(uuid.encode()).hexdigest()[:8], 16)
+        points.append(PointStruct(
+            id=uid, vector=embed(text),
+            payload={"text": text, "type": "estimate", "source": source_file,
+                     "ingested_at": datetime.utcnow().isoformat(), **{k: v for k, v in r.items() if v}},
+        ))
+        if len(points) >= 50:
+            qdrant.upsert(collection_name=HCP_COLLECTION, points=points)
+            points = []
+    if points:
+        qdrant.upsert(collection_name=HCP_COLLECTION, points=points)
+    log.info("Upserted %d estimate options from %s (skipped %d)", len(rows) - skipped, path.name, skipped)
+
+
+def process_csv(path: Path, source_file: str):
+    with open(path, newline="", encoding="utf-8-sig") as f:
+        reader = csv.DictReader(f)
+        rows = list(reader)
+    if not rows:
+        return
+
+    file_type = detect_type(list(rows[0].keys()))
+
+    if file_type == "estimate":
+        process_estimates_csv(path, source_file)
+        return
+    if file_type == "pricebook":
+        process_pricebook_csv(path, source_file)
+        return
+    if file_type == "pricebook_materials":
+        process_pricebook_materials_csv(path, source_file)
+        return
+
+    ensure_collection(HCP_COLLECTION)
+    log.info("Processing %s as %s (%d rows)", path.name, file_type, len(rows))
+    points = []
+    for row in rows:
+        text = row_to_text(row, file_type)
+        if not text.strip():
+            continue
+        uid = int(hashlib.md5(text.encode()).hexdigest()[:8], 16)
+        points.append(PointStruct(
+            id=uid, vector=embed(text),
+            payload={"text": text, "type": file_type, "source": source_file,
+                     "ingested_at": datetime.utcnow().isoformat(), **{k: v for k, v in row.items() if v}},
+        ))
+        if len(points) >= 50:
+            qdrant.upsert(collection_name=HCP_COLLECTION, points=points)
+            points = []
+    if points:
+        qdrant.upsert(collection_name=HCP_COLLECTION, points=points)
+    log.info("Upserted %d rows from %s", len(rows), path.name)
+
+
+# ── PDF helpers ───────────────────────────────────────────────────────────────
+
+def chunk_text(text: str, chunk_size: int = PDF_CHUNK_CHARS, overlap: int = PDF_CHUNK_OVERLAP) -> list[str]:
+    """Paragraph-aware chunker. Splits on double-newlines first; char-chunks oversized paragraphs."""
+    paragraphs = [p.strip() for p in re.split(r'\n\s*\n', text) if p.strip()]
+    if not paragraphs:
+        return [text[:chunk_size]] if text.strip() else []
+
+    chunks, current = [], ""
+    for para in paragraphs:
+        if len(para) > chunk_size * 1.5:
+            if current and len(current) >= 50:
+                chunks.append(current)
+            current = ""
+            start = 0
+            while start < len(para):
+                c = para[start:start + chunk_size].strip()
+                if c:
+                    chunks.append(c)
+                start += chunk_size - overlap
+        elif current and len(current) + len(para) + 2 > chunk_size:
+            if len(current) >= 50:
+                chunks.append(current)
+            current = (current[-overlap:] + "\n\n" + para) if len(current) > overlap else para
+        else:
+            current = (current + "\n\n" + para).strip() if current else para
+
+    if current and len(current) >= 50:
+        chunks.append(current)
+    return chunks or [text[:chunk_size]]
+
+
+def process_pdf(path: Path):
+    ensure_collection(DOCS_COLLECTION)
+    log.info("Processing PDF: %s", path.name)
+    full_text = []
+    try:
+        with pdfplumber.open(path) as pdf:
+            for page in pdf.pages:
+                page_text = page.extract_text()
+                if page_text:
+                    full_text.append(page_text)
+    except Exception as e:
+        log.error("Failed to read PDF %s: %s", path.name, e)
+        return
+
+    combined = "\n".join(full_text)
+    chunks = chunk_text(combined)
+    log.info("  %d pages → %d chunks", len(full_text), len(chunks))
+
+    points = []
+    for i, chunk in enumerate(chunks):
+        uid = int(hashlib.md5(f"{path.name}:{i}:{chunk[:80]}".encode()).hexdigest()[:8], 16)
+        points.append(PointStruct(
+            id=uid, vector=embed(chunk),
+            payload={
+                "text": chunk, "type": "reference", "source": path.name,
+                "chunk_index": i, "total_chunks": len(chunks),
+                "ingested_at": datetime.utcnow().isoformat(),
+            },
+        ))
+        if len(points) >= 20:
+            qdrant.upsert(collection_name=DOCS_COLLECTION, points=points)
+            points = []
+    if points:
+        qdrant.upsert(collection_name=DOCS_COLLECTION, points=points)
+    log.info("Upserted %d chunks from %s", len(chunks), path.name)
+
+
+# ── File routing ──────────────────────────────────────────────────────────────
+
+def handle_hcp_file(filepath: Path):
+    if filepath.suffix.lower() == ".zip":
+        with zipfile.ZipFile(filepath) as zf:
+            for name in zf.namelist():
+                if name.endswith(".csv"):
+                    data = zf.read(name).decode("utf-8-sig")
+                    tmp = filepath.parent / name.replace("/", "_")
+                    tmp.write_text(data, encoding="utf-8")
+                    try:
+                        process_csv(tmp, filepath.name)
+                    finally:
+                        tmp.unlink(missing_ok=True)
+    elif filepath.suffix.lower() == ".csv":
+        process_csv(filepath, filepath.name)
+    else:
+        log.warning("Skipping unsupported HCP file: %s", filepath.name)
+        return
+    _archive(filepath)
+
+
+def process_txt(path: Path):
+    ensure_collection(DOCS_COLLECTION)
+    text = path.read_text(encoding="utf-8", errors="ignore")
+    chunks = chunk_text(text)
+    log.info("Processing TXT %s → %d chunks", path.name, len(chunks))
+    points = []
+    for i, chunk in enumerate(chunks):
+        uid = int(hashlib.md5(f"{path.name}:{i}:{chunk[:80]}".encode()).hexdigest()[:8], 16)
+        points.append(PointStruct(
+            id=uid, vector=embed(chunk),
+            payload={"text": chunk, "type": "reference", "source": path.name,
+                     "chunk_index": i, "total_chunks": len(chunks),
+                     "ingested_at": datetime.utcnow().isoformat()},
+        ))
+        if len(points) >= 20:
+            qdrant.upsert(collection_name=DOCS_COLLECTION, points=points)
+            points = []
+    if points:
+        qdrant.upsert(collection_name=DOCS_COLLECTION, points=points)
+    log.info("Upserted %d chunks from %s", len(chunks), path.name)
+
+
+def process_docx(path: Path):
+    ensure_collection(DOCS_COLLECTION)
+    try:
+        doc = DocxDocument(str(path))
+        text = "\n".join(p.text for p in doc.paragraphs if p.text.strip())
+    except Exception as e:
+        log.error("Failed to read DOCX %s: %s", path.name, e)
+        return
+    chunks = chunk_text(text)
+    log.info("Processing DOCX %s → %d chunks", path.name, len(chunks))
+    points = []
+    for i, chunk in enumerate(chunks):
+        uid = int(hashlib.md5(f"{path.name}:{i}:{chunk[:80]}".encode()).hexdigest()[:8], 16)
+        points.append(PointStruct(
+            id=uid, vector=embed(chunk),
+            payload={"text": chunk, "type": "reference", "source": path.name,
+                     "chunk_index": i, "total_chunks": len(chunks),
+                     "ingested_at": datetime.utcnow().isoformat()},
+        ))
+        if len(points) >= 20:
+            qdrant.upsert(collection_name=DOCS_COLLECTION, points=points)
+            points = []
+    if points:
+        qdrant.upsert(collection_name=DOCS_COLLECTION, points=points)
+    log.info("Upserted %d chunks from %s", len(chunks), path.name)
+
+
+def process_xlsx(path: Path):
+    import pandas as pd
+    ensure_collection(DOCS_COLLECTION)
+    try:
+        sheets = pd.read_excel(path, sheet_name=None, dtype=str)
+    except Exception as e:
+        log.error("Failed to read XLSX %s: %s", path.name, e)
+        return
+    points = []
+    total_rows = 0
+    for sheet_name, df in sheets.items():
+        df = df.dropna(how="all").fillna("")
+        for _, row in df.iterrows():
+            row_text = f"[{path.stem} / {sheet_name}]\n" + "\n".join(
+                f"{col}: {val}" for col, val in row.items() if str(val).strip()
+            )
+            if not row_text.strip():
+                continue
+            uid = int(hashlib.md5(row_text.encode()).hexdigest()[:8], 16)
+            points.append(PointStruct(
+                id=uid, vector=embed(row_text),
+                payload={"text": row_text, "type": "reference", "source": path.name,
+                         "sheet": sheet_name, "ingested_at": datetime.utcnow().isoformat()},
+            ))
+            total_rows += 1
+            if len(points) >= 20:
+                qdrant.upsert(collection_name=DOCS_COLLECTION, points=points)
+                points = []
+    if points:
+        qdrant.upsert(collection_name=DOCS_COLLECTION, points=points)
+    log.info("Upserted %d rows from %s", total_rows, path.name)
+
+
+def handle_doc_file(filepath: Path):
+    ext = filepath.suffix.lower()
+    if ext == ".pdf":
+        process_pdf(filepath)
+        _archive(filepath)
+    elif ext in (".txt", ".md"):
+        process_txt(filepath)
+        _archive(filepath)
+    elif ext == ".docx":
+        process_docx(filepath)
+        _archive(filepath)
+    elif ext in (".xlsx", ".xls"):
+        process_xlsx(filepath)
+        _archive(filepath)
+    else:
+        log.warning("Skipping unsupported doc file: %s", filepath.name)
+
+
+def process_coding_doc(path: Path):
+    ensure_collection(CODING_COLLECTION)
+    ext = path.suffix.lower()
+    if ext in (".md", ".txt"):
+        text = path.read_text(encoding="utf-8", errors="ignore")
+    elif ext == ".pdf":
+        pages = []
+        try:
+            with pdfplumber.open(path) as pdf:
+                for page in pdf.pages:
+                    t = page.extract_text()
+                    if t:
+                        pages.append(t)
+        except Exception as e:
+            log.error("Failed to read PDF %s: %s", path.name, e)
+            return
+        text = "\n".join(pages)
+    else:
+        log.warning("Skipping unsupported coding doc: %s", path.name)
+        return
+
+    chunks = chunk_text(text)
+    log.info("Processing coding doc %s → %d chunks", path.name, len(chunks))
+    points = []
+    for i, chunk in enumerate(chunks):
+        uid = int(hashlib.md5(f"coding:{path.name}:{i}:{chunk[:80]}".encode()).hexdigest()[:8], 16)
+        points.append(PointStruct(
+            id=uid, vector=embed(chunk),
+            payload={
+                "text": chunk, "type": "coding", "source": path.name,
+                "chunk_index": i, "total_chunks": len(chunks),
+                "ingested_at": datetime.utcnow().isoformat(),
+            },
+        ))
+        if len(points) >= 20:
+            qdrant.upsert(collection_name=CODING_COLLECTION, points=points)
+            points = []
+    if points:
+        qdrant.upsert(collection_name=CODING_COLLECTION, points=points)
+    log.info("Upserted %d chunks from %s", len(chunks), path.name)
+
+
+def _archive(filepath: Path):
+    dest = PROCESSED_DIR / f"{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}_{filepath.name}"
+    shutil.move(str(filepath), dest)
+    log.info("Archived → %s", dest.name)
+
+
+# ── Watchdog handlers ─────────────────────────────────────────────────────────
+
+class HCPHandler(FileSystemEventHandler):
+    def on_created(self, event):
+        if event.is_directory:
+            return
+        time.sleep(1)
+        try:
+            handle_hcp_file(Path(event.src_path))
+        except Exception as e:
+            log.error("Error processing HCP file %s: %s", event.src_path, e)
+
+
+class DocsHandler(FileSystemEventHandler):
+    def on_created(self, event):
+        if event.is_directory:
+            return
+        if Path(event.src_path).suffix.lower() not in (".pdf", ".txt", ".md", ".docx", ".xlsx", ".xls"):
+            return
+        time.sleep(1)
+        try:
+            handle_doc_file(Path(event.src_path))
+        except Exception as e:
+            log.error("Error processing doc file %s: %s", event.src_path, e)
+
+
+class CodingDocsHandler(FileSystemEventHandler):
+    SUPPORTED = {".md", ".txt", ".pdf"}
+
+    def on_created(self, event):
+        if event.is_directory:
+            return
+        if Path(event.src_path).suffix.lower() not in self.SUPPORTED:
+            return
+        time.sleep(1)
+        try:
+            process_coding_doc(Path(event.src_path))
+            _archive(Path(event.src_path))
+        except Exception as e:
+            log.error("Error processing coding doc %s: %s", event.src_path, e)
+
+
+def ingest_existing():
+    HCP_DIR.mkdir(parents=True, exist_ok=True)
+    for f in HCP_DIR.iterdir():
+        if f.is_file() and f.suffix.lower() in (".csv", ".zip"):
+            log.info("Ingesting existing HCP file: %s", f.name)
+            try:
+                handle_hcp_file(f)
+            except Exception as e:
+                log.error("Error: %s", e)
+
+    DOCS_DIR.mkdir(parents=True, exist_ok=True)
+    for f in DOCS_DIR.iterdir():
+        if f.is_file() and f.suffix.lower() in (".pdf", ".txt", ".md", ".docx", ".xlsx", ".xls"):
+            log.info("Ingesting existing doc: %s", f.name)
+            try:
+                handle_doc_file(f)
+            except Exception as e:
+                log.error("Error: %s", e)
+
+    CODING_DIR.mkdir(parents=True, exist_ok=True)
+    for f in CODING_DIR.iterdir():
+        if f.is_file() and f.suffix.lower() in (".md", ".txt", ".pdf"):
+            log.info("Ingesting existing coding doc: %s", f.name)
+            try:
+                process_coding_doc(f)
+                _archive(f)
+            except Exception as e:
+                log.error("Error: %s", e)
+
+
+if __name__ == "__main__":
+    log.info("Starting ingest service")
+    log.info("  HCP watch: %s", HCP_DIR)
+    log.info("  Docs watch: %s", DOCS_DIR)
+    log.info("  Coding docs watch: %s", CODING_DIR)
+    ingest_existing()
+
+    observer = Observer()
+    observer.schedule(HCPHandler(), str(HCP_DIR), recursive=False)
+    observer.schedule(DocsHandler(), str(DOCS_DIR), recursive=False)
+    observer.schedule(CodingDocsHandler(), str(CODING_DIR), recursive=False)
+    observer.start()
+    try:
+        while True:
+            time.sleep(5)
+    except KeyboardInterrupt:
+        observer.stop()
+    observer.join()

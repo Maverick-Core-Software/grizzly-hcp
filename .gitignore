@@ -11,3 +11,7 @@ proposals/
 *.log
 .playwright/
 .worktrees/
+
+# Python bytecode from local verification of deploy/mav-rag
+__pycache__/
+*.pyc

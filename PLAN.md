@@ -854,3 +854,33 @@ change. Recorded because it changes files Session 1 and Session 2b wrote.
   set. This is not a defect — Session 5's env template already sets it — but the
   variable is mandatory for the bundle, not optional, and any smoke test of
   `dist/sync-catalog.mjs` must set it.
+
+### 2026-07-28 — Session 4: apply step is a rebuild, not a restart
+
+Mechanical corrections found while executing Session 4. No scope or design
+change; the ingest change itself is exactly what the session specified.
+
+- **`/opt/mav-rag/docker-compose.yml` declares `build: ./ingest`.** The ingest
+  image is built from source and `main.py` is baked in at build time — it is not
+  bind-mounted. Session 4's text said to "restart the ingest container", which
+  would silently keep running the old code. The correct apply step is
+  `docker compose build ingest && docker compose up -d ingest`, and the container
+  path to verify is `/app/main.py` (`WORKDIR /app` + `COPY main.py .`).
+  `deploy/mav-rag/README.md` documents the rebuild, not a restart.
+- **Verification was not inspection-only.** The session assumed no Python on this
+  machine; there is one (3.12). The change was therefore `py_compile`d, and
+  `detect_type` / `estimate_row_to_text` were extracted via `ast` and exercised
+  without their third-party imports against the real 15-column header of the
+  `estimates.csv` produced by Session 3's smoke run. Six classification cases
+  pass, including a hybrid header carrying both `estimate_uuid` and job columns,
+  which confirms the estimate branch wins.
+- **The pre-dispatch snapshot needed a transfer channel Orca does not offer.**
+  `terminal read` returns nothing for remote environments and `terminal show`'s
+  preview is hard-capped at 300 characters. The file was moved by gzipping and
+  base64-encoding it on the host and reading it back in 26 chunks through the
+  preview, then verified byte-exact by sha256. No listening socket, no remote
+  shell, and no process started on AIWA. The same channel works outbound via
+  `terminal send` for pushing the reviewed file back.
+- **Added `.gitattributes`** with `deploy/** text eol=lf`. Without it Git would
+  hand out CRLF copies on checkout, which would both break the snapshot's
+  byte-exactness and put CRLF into a Python file destined for a Linux container.

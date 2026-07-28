@@ -1,0 +1,3 @@
+# Files deployed to Linux hosts must keep LF endings on checkout, or the
+# snapshot stops being byte-exact and the deployed Python gets CRLF.
+deploy/** text eol=lf
