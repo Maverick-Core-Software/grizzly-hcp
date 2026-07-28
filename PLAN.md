@@ -11,8 +11,11 @@
 needs is restated inside that session.)*
 
 - **Environment:** Windows 11, Node 24 on PATH, npm, TypeScript run through `tsx`.
-  Repo root `C:\Workspace\Active\grizzly-hcp`. Tests are plain `node --test` files
-  named `*.test.js` next to their source; there is no jest/vitest.
+  Repo root `C:\Workspace\Active\grizzly-hcp`. Tests are `*.test.js` files next to
+  their source; there is no jest/vitest. They import the TypeScript module under
+  its `.js` specifier, so they must be run through the tsx loader —
+  `npx tsx --test <file>`, **not** bare `node --test` (which fails
+  `ERR_MODULE_NOT_FOUND`).
 - **What this build does:** two things at once.
   1. Relocates the weekly HCP → RAG exports (price book + customers) off the
      Windows PC so they run natively on the AIWA Proxmox host, killing the last
@@ -174,7 +177,7 @@ existing tests still pass.
 - Env vars: `PRICEBOOK_CSV_PATH`, `CUSTOMERS_CSV_PATH`
 
 **Verification:**
-- Run: `node --test src/hcp/rag-publish.test.js` — expected: all tests pass
+- Run: `npx tsx --test src/hcp/rag-publish.test.js` — expected: all tests pass
   including the new cases, `0 fail`.
 - Run: `npx tsc --noEmit` — expected: no errors. If the repo has no tsconfig
   suitable for this, say so in your report rather than inventing one.
@@ -706,3 +709,23 @@ an important way, and the plan was rewritten before any execution:
 
 Scope grew from 5 sessions to 7. Carter also chose to leave the misnamed
 `hcp-estimates-sync` unit alone rather than rename it on the server.
+
+### 2026-07-28 — Session 1 verification corrections
+
+Mechanical corrections only; no scope or design change.
+
+- **Test runner command was wrong in the plan.** `node --test` cannot resolve a
+  `*.test.js` file that imports its TypeScript module under a `.js` specifier —
+  it fails with `ERR_MODULE_NOT_FOUND`. Corrected to `npx tsx --test` in the
+  Codebase Primer and in Session 1's verification step. Under the corrected
+  command all 8 tests pass.
+- **`PRICEBOOK_CSV_PATH` was not wired.** Session 1 required both exporters to
+  honour a CSV path override; `export-customers.ts` got `CUSTOMERS_CSV_PATH` but
+  `export-pricebook.ts` kept its hardcoded path. Fixed by the orchestrator (B4
+  rung 1 — wiring the blueprint already fully specified, mirroring the pattern
+  already present in `export-customers.ts`).
+- **Pre-existing typecheck failures.** `npx tsc --noEmit` reports errors in
+  `src/automations/estimates/from-proposal.ts` (the retired DOCX flow) and
+  `src/hcp/mine-pricebook-candidates.ts`. Neither file is touched by this build.
+  Later sessions must treat a clean typecheck as *"no new errors outside those
+  two files"*, not a zero-error exit.

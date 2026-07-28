@@ -11,7 +11,10 @@ import { fileURLToPath } from 'url';
 import { hcpGet } from './client.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const CSV_PATH = path.resolve(__dirname, '../../data/pricebook.csv');
+const CSV_PATH =
+  process.env.PRICEBOOK_CSV_PATH
+    ? path.resolve(process.env.PRICEBOOK_CSV_PATH)
+    : path.resolve(__dirname, '../../data/pricebook.csv');
 
 // ─── HCP response types ────────────────────────────────────────────────────────
 
