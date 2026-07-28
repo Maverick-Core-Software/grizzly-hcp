@@ -126,7 +126,12 @@ async function fetchAllMaterials(materialCategoryUuid: string): Promise<HcpMater
   return materials;
 }
 
-async function run() {
+export async function runPricebookExport(): Promise<{
+  csvPath: string;
+  serviceCount: number;
+  materialCount: number;
+  rowCount: number;
+}> {
   console.log('Fetching Grizzly price book from HCP...\n');
 
   // 1. Get the Electrical industry
@@ -197,9 +202,22 @@ async function run() {
 
   console.log(`\nExported ${totalServices} services + ${totalMaterials} materials = ${rows.length} total → ${CSV_PATH}`);
   console.log('Run "npm run push-pricebook" to re-index in RAG.');
+
+  return {
+    csvPath: CSV_PATH,
+    serviceCount: totalServices,
+    materialCount: totalMaterials,
+    rowCount: rows.length,
+  };
 }
 
-run().catch(err => {
-  console.error('\nFailed:', err.message);
-  process.exit(1);
-});
+// -- CLI entry --
+
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  runPricebookExport()
+    .then(() => process.exit(0))
+    .catch(err => {
+      console.error('\nFailed:', err.message);
+      process.exit(1);
+    });
+}

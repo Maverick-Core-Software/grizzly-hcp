@@ -9,7 +9,10 @@ import { fileURLToPath } from 'url';
 import { hcpGet } from './client.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const CSV_PATH = path.resolve(__dirname, '../../data/customers.csv');
+const CSV_PATH =
+  process.env.CUSTOMERS_CSV_PATH
+    ? path.resolve(process.env.CUSTOMERS_CSV_PATH)
+    : path.resolve(__dirname, '../../data/customers.csv');
 
 interface HcpAddress {
   street: string;
@@ -43,7 +46,10 @@ function escape(s: string | null | undefined): string {
   return `"${String(s ?? '').replace(/"/g, '""')}"`;
 }
 
-async function run() {
+export async function runCustomersExport(): Promise<{
+  csvPath: string;
+  customerCount: number;
+}> {
   console.log('Fetching all customers from HCP...');
 
   const rows: string[] = [];
@@ -93,9 +99,20 @@ async function run() {
   await fs.writeFile(CSV_PATH, HEADER + '\n' + rows.join('\n'), 'utf-8');
   console.log(`\n\nExported ${total} customers → ${CSV_PATH}`);
   console.log('Run "npm run push-customers" to re-index in RAG.');
+
+  return {
+    csvPath: CSV_PATH,
+    customerCount: total,
+  };
 }
 
-run().catch(err => {
-  console.error('\nFailed:', err.message);
-  process.exit(1);
-});
+// -- CLI entry --
+
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  runCustomersExport()
+    .then(() => process.exit(0))
+    .catch(err => {
+      console.error('\nFailed:', err.message);
+      process.exit(1);
+    });
+}

@@ -52,21 +52,21 @@ export function resolveRagConfig(env: NodeJS.ProcessEnv = process.env): RagConfi
 }
 
 /**
- * Delete stale job points from the Qdrant collection.
+ * Delete stale points by type from the Qdrant collection.
  *
  * For 'local' target: POST to the collection's delete endpoint.
- * For 'remote' target: run the same SSH command sync-estimates.ts used today.
+ * For 'remote' target: run curl against the remote Qdrant.
  */
-export async function deleteJobPoints(cfg: RagConfig): Promise<void> {
+export async function deletePointsByType(cfg: RagConfig, type: string): Promise<void> {
   const label = cfg.target === 'local' ? 'local' : 'remote (SSH)';
-  console.log(`  Deleting job points via ${label}...`);
+  console.log(`  Deleting ${type} points via ${label}...`);
 
   if (cfg.target === 'local') {
     const url = `${cfg.qdrantUrl}/collections/${cfg.collection}/points/delete`;
     const body = JSON.stringify({
       filter: {
         must: [
-          { key: 'type', match: { value: 'job' } },
+          { key: 'type', match: { value: type } },
         ],
       },
     });
@@ -82,34 +82,59 @@ export async function deleteJobPoints(cfg: RagConfig): Promise<void> {
       throw new Error(`Qdrant delete failed: ${res.status} ${text}`);
     }
 
-    console.log('  Job points cleared.');
+    console.log(`  ${type} points cleared.`);
   } else {
     const cmd = [
       `ssh -i "${cfg.sshKey}" -o StrictHostKeyChecking=no ${cfg.proxmox}`,
       `"curl -s -X POST http://localhost:6333/collections/${cfg.collection}/points/delete`,
       `-H 'Content-Type: application/json'`,
-      `-d '{\\"filter\\":{\\"must\\":[{\\"key\\":\\"type\\",\\"match\\":{\\"value\\":\\"job\\"}}]}}'"`,
+      `-d '{\\"filter\\":{\\"must\\":[{\\"key\\":\\"type\\",\\"match\\":{\\"value\\":\\"${type}\\"}}]}}'"`,
     ].join(' ');
     execSync(cmd, { stdio: 'inherit' });
   }
 }
 
 /**
+ * Delete stale job points from the Qdrant collection.
+ *
+ * For 'local' target: POST to the collection's delete endpoint.
+ * For 'remote' target: run the same SSH command sync-estimates.ts used today.
+ */
+export async function deleteJobPoints(cfg: RagConfig): Promise<void> {
+  await deletePointsByType(cfg, 'job');
+}
+
+/**
  * Publish the enriched CSV to the configured ingest directory.
  *
- * For 'local' target: copy the file under the destination directory.
+ * For 'local' target: copy the file under the destination directory using
+ *   destFileName (default: 'estimates-enriched.csv').
  * For 'remote' target: run the same SCP command sync-estimates.ts used today.
+ *
+ * When destFileName is passed and target is 'remote', throws if the name
+ * differs from 'estimates-enriched.csv', because the remote SCP path is
+ * fixed and cannot accommodate alternate names.
  */
-export async function publishCsv(cfg: RagConfig, localCsvPath: string): Promise<void> {
+export async function publishCsv(
+  cfg: RagConfig,
+  localCsvPath: string,
+  destFileName: string = 'estimates-enriched.csv',
+): Promise<void> {
   const label = cfg.target === 'local' ? 'local filesystem' : 'remote (SCP)';
   console.log(`  Publishing CSV via ${label}...`);
 
   if (cfg.target === 'local') {
     const destDir = cfg.ingestDir;
     await fs.mkdir(destDir, { recursive: true });
-    await fs.copyFile(localCsvPath, path.join(destDir, 'estimates-enriched.csv'));
-    console.log('  CSV published.');
+    await fs.copyFile(localCsvPath, path.join(destDir, destFileName));
+    console.log(`  CSV published as ${destFileName}.`);
   } else {
+    if (destFileName !== 'estimates-enriched.csv') {
+      throw new Error(
+        `Remote publish only supports 'estimates-enriched.csv'; got '${destFileName}'. ` +
+        'The remote SCP path is fixed and cannot accommodate alternate names.',
+      );
+    }
     execSync(
       `scp -i "${cfg.sshKey}" -o StrictHostKeyChecking=no "${localCsvPath}" ${cfg.proxmox}:${cfg.remotePath}`,
       { stdio: 'inherit' },
