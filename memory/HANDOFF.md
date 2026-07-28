@@ -1,149 +1,268 @@
 # Handoff — sync-estimates AIWA Relocation
 
-## What Changed
+**Status as of 2026-07-28: this phase is COMPLETE.** The next agent's job is the *next* phase, not
+this one. Read "Start Here" and go.
 
-The `src/hcp/sync-estimates.ts` job (weekly, scrapes completed HCP estimates and syncs them
-to Qdrant) has been relocated from the Windows PC to run natively on the Proxmox host
-at `192.168.1.12` as a systemd timer.
+---
 
-### Code changes
+## Start Here
 
-| File | What it does |
-|------|-------------|
-| `src/hcp/auth-cookies.ts` | Playwright-free half of HCP auth. Reads the cookie JSON file at `HCP_COOKIES_FILE` (default `auth/hcp-cookies.json`) and returns a `Cookie:` header. Exports `COOKIES_FILE` and `getCookieHeader()`. |
-| `src/hcp/auth-login.ts` | Interactive login using Playwright. Exports `SESSION_DIR` and `loginAndSave()`. Only runs when someone invokes `npm run login`. |
-| `src/hcp/auth.ts` | Compatibility shim — re-exports `COOKIES_FILE`, `getCookieHeader`, `SESSION_DIR`, `loginAndSave` so existing importers are unchanged, and keeps the CLI self-invoke block that backs `npm run login`. |
-| `src/hcp/rag-publish.ts` | Makes the publish step switchable: `remote` target (original SSH+SCP to AIWA, still the default) or `local` target (direct HTTP to Qdrant + local file copy). Exports `resolveRagConfig()`, `deleteJobPoints()`, `publishCsv()`. |
-| `dist/sync-estimates.mjs` | esbuild self-contained bundle (`npm run build:sync-estimates`) — no Playwright, no `node_modules` needed on the target. Gitignored; rebuild before deploying. |
-| `deploy/aiwa/` | `hcp-estimates-sync.service`, `hcp-estimates-sync.timer`, `hcp-estimates-sync.env.example`. Units validated with `systemd-analyze verify`. |
-| `docs/AIWA-DEPLOY-sync-estimates.md` | Operator runbook for deploying and operating the relocated job. |
-| `docs/superpowers/specs/2026-07-24-sync-estimates-aiwa-relocation-design.md` | Design spec covering the full architecture rationale. |
+### The mission behind all of this
 
-### Design doc
+A passphrase-less SSH deploy key on the Windows PC lets any agent reach the AIWA Proxmox host
+directly. The rule against ad-hoc SSH is written into every harness's instructions, and agents
+still violate it — a pi/DeepSeek agent acknowledged the rule and then used the key anyway. Soft
+instructions do not hold.
 
-Full spec at `docs/superpowers/specs/2026-07-24-sync-estimates-aiwa-relocation-design.md`.
+The plan is therefore to make violation *impossible* rather than forbidden: **relocate every job
+that needs the key so it runs natively on AIWA, then retire the key.** A key that does not exist
+cannot be misused by any harness, present or future. Retiring it is the hard stop.
 
-### Runbook
+This is not a cleanup task. It is the enforcement mechanism.
 
-Operator instructions at `docs/AIWA-DEPLOY-sync-estimates.md` — deploy, verify, roll back.
+### What is already done
 
-## Cutover Status (2026-07-27)
+`sync-estimates` — the weekly HCP estimate scraper — has been fully relocated. It now runs on the
+Proxmox host as a systemd timer, publishes to Qdrant over localhost, and touches no key at all.
+The PC's PM2 trigger for it is deleted. That eliminated **2 of the key's uses**.
 
-**Staged and test-run on AIWA; timer not yet enabled.**
+### What to do next
 
-Done:
+Relocate the remaining key consumers, using `sync-estimates` as the proven template. In rough
+order of ease:
 
-- Bundle, env file, and cookies staged at `/opt/hcp-estimates-sync/` and checksum-verified
-  against the local build (`sync-estimates.mjs` sha256 `fc8f05f9…`, cookies sha256 `5e2ce512…`).
-- **Manual run succeeded 2026-07-28 03:04 UTC.** Exit 0; 1073 jobs pulled from the HCP API over
-  11 pages; CSV written at 353239 bytes — the same size the PC path produced; ingest archived it
-  to `processed/20260728_030851_estimates-enriched.csv`; Qdrant `grizzly_hcp` went 2120 → 1147
-  (stale points cleared) → back to **2120 exactly** and held. No deploy key was used anywhere
-  in the run, which was the point of the relocation.
-- **PC-side trigger retired 2026-07-27 23:03.** PM2 entry `sync-estimates-weekly` deleted and the
-  dump persisted; dump went 15 → 13 entries with no `cron_restart` remaining.
+| Consumer | Notes |
+|---|---|
+| `sync-pricebook` | Closest sibling to `sync-estimates`; same publish path. Do this one first. |
+| `push-customers` / `push-jobs` / `push-pricebook` | Share the `rag-publish.ts` mechanism already made switchable. |
+| `Watch-HCPExports` | A PC-side file watcher. Consider whether it is still needed once producers run on AIWA. |
+| `index-docs` | Check whether its inputs even originate on the PC any more. |
+| `sync-from-proxmox.ps1` | Pulls *from* AIWA. Likely needs a different answer than relocation. |
 
-- **Timer installed and armed 2026-07-27 23:13 CDT.** Units copied to `/etc/systemd/system/`
-  (root:root 644; sha256 verified against the repo copies — service `74189778…`, timer `8c81ff1f…`),
-  `systemd-analyze verify` clean, `systemctl enable --now hcp-estimates-sync.timer` rc=0. State is
-  `enabled`/`active`, next elapse **Sun 2026-08-02 03:30:32 CDT**, `Persistent=yes`,
-  `RandomizedDelaySec=5min`. Host timezone confirmed `America/Chicago`. Enabling the timer did not
-  start the service (`hcp-estimates-sync.service` remained `inactive`), as intended.
+**Only when that list is empty** does the key-retirement step become available. Do not retire the
+key early — verify each consumer is genuinely dead first, the same way `sync-estimates` was
+verified (see "How this work gets verified" below).
 
-**The cutover is complete: AIWA now owns the schedule and the PC has no trigger.**
+### One item still pending on the completed phase
 
-## Hardened Path Validated (2026-07-28)
+The timer has been validated but **has never fired autonomously**. First real fire is
+**Sun 2026-08-02 03:30 CDT**.
 
-The earlier test run was a plain `node` process, so the systemd sandbox had never actually been
-exercised. Since the PC fallback is gone, a sandbox failure would have surfaced only as a silent
-miss on Sunday 03:30. `systemctl start hcp-estimates-sync.service` was run to settle it with
-evidence rather than reasoning.
+A scheduled verification task is already registered and will run itself — you do not need to set
+it up:
 
-**Result: `Result=success`, `ExecMainStatus=0`**, 23:19:54 → 23:20:37 CDT (43s wall, 1.901s CPU,
-75.9M peak). The pipeline behaved identically to the unsandboxed run: 1073 jobs, line items on
-1065/1073, CSV 353239 bytes, Qdrant points cleared and republished.
+- **`C:\Users\carte\.claude\scheduled-tasks\verify-hcp-estimates-sync-timer\SKILL.md`**
+- Fires once at **2026-08-02 03:35 CDT**, then auto-disables.
+- Caveat: scheduled tasks only run while the Claude app is open. If it was closed at 03:35, the
+  task runs on next launch — still valid, since all the evidence it reads is persistent.
 
-Each directive was verified live from inside the running process (`nsenter -t <pid> -m`) rather
-than assumed from the unit file:
+If that check has already run by the time you read this, its result is in `memory/JOURNAL.md`.
+If it reported FAIL, **that takes priority over starting new relocation work.**
+
+---
+
+## Required Reading Before You Touch Anything
+
+Read these in order. Do not skip the brain vault — it holds cross-project findings that are not in
+this repo.
+
+| # | Path | Why |
+|---|---|---|
+| 1 | `memory/JOURNAL.md` → entries **2026-07-25** and **2026-07-27/28** | The full narrative of the relocation and cutover, including two corrections that will bite you if you don't know them. The 07-27/28 entry is the important one. |
+| 2 | `C:\Workspace\Active\brain\projects\grizzly-hcp.md` → sections **2026-07-25** and **2026-07-28** | Brain vault project note. The 2026-07-28 section carries the generalizable findings (PM2 cron semantics, Windows batch traps) and the current live state. |
+| 3 | `docs/AIWA-DEPLOY-sync-estimates.md` | Operator runbook. **Section 7.0** = PM2 retirement, **Section 10** = rollback. This is the template to copy for the next consumer. |
+| 4 | `docs/superpowers/specs/2026-07-24-sync-estimates-aiwa-relocation-design.md` | Design spec — the architectural rationale for the whole pattern. |
+| 5 | `C:\Workspace\Active\brain\knowledge\infrastructure.md` | Host IPs, keys, services. Read it rather than memorizing from any handoff. |
+
+Also relevant, if the enforcement side of the mission is in scope for your session:
+`C:\Workspace\Shared\Agents\Hermes-Supervisor` — the cross-harness guard work lives there,
+including `tools/aiwa-guard.sh`.
+
+---
+
+## Hard Rules For This Work
+
+These are not suggestions. The first two are the entire point of the project.
+
+- **Reach AIWA only through Orca.** No ssh, no scp, no ad-hoc remote shell. Environment name is
+  `aiwa-host`, and **every** Orca terminal command needs `--environment aiwa-host` or it fails with
+  `selector_not_found`.
+- **`tools/aiwa-guard.sh` blocks any command text containing the literal tokens `ssh` or `scp`.**
+  This includes git commit messages. Write around it — say "deploy key" or "remote shell".
+- **Get explicit approval before changing live state** — any service start/stop/restart, timer
+  action, unit reload, or PM2 operation. Verification and read-only inspection need no approval.
+- **Never stage `.env.bak-pre-lxc-20260721-130527`.** It is untracked, contains real credentials,
+  and sits in this repo's root. Check `git status` before every `git add`; stage files by name,
+  never `git add -A`.
+- **Do not develop against live state.** `/opt/hcp-estimates-sync/` on AIWA is a deployment target.
+  Author changes here, commit, push, then deploy the reviewed commit.
+
+---
+
+## Two Findings That Will Cost You Hours If You Don't Know Them
+
+Both were discovered the hard way during this cutover.
+
+### `pm2 stop` does NOT disarm a `cron_restart` job
+
+In PM2 7.0.3, `God.deleteCron()` is called from only `deleteProcessId` and `restartProcessId`.
+`stopProcessId` never touches `God.CronJobs`. Worse, `God.registerCron()` runs *before* the
+`autostart === false` check, so an entry that never started still has an armed cron.
+
+A `cron_restart` + `autorestart:false` entry's **resting state is `stopped`** — so the CLI status
+tells you nothing about whether the schedule is live. This entry showed `stopped` and fired anyway
+at `created_at 2026-07-26 02:00:02`, exactly matching its cron.
+
+**Only `pm2 delete` disarms it. Verify against `C:\ProgramData\pm2\dump.pm2`, not the CLI table.**
+
+### Two Windows batch traps
+
+- `gsudo cmd /c "a && b"` can drop into an *interactive* cmd instead of running the chain. Write a
+  `.cmd` file and run `gsudo ./file.cmd` instead.
+- `pm2` is a `.cmd` shim, so a batch file must use **`call pm2 …`**. Without `call`, control
+  transfers away and every later line is silently skipped — while still reporting success. This
+  caused a `pm2 save` to not run; it was caught only by checking `dump.pm2`'s mtime rather than
+  trusting the exit code.
+
+---
+
+## How This Work Gets Verified
+
+The standard the last phase was held to. Match it.
+
+- **Run the real thing, don't reason about it.** The systemd sandbox was proven by executing the
+  actual unit and inspecting the live process namespace with `nsenter -t <pid> -m`, not by reading
+  the unit file.
+- **Exit 0 is not proof of success.** Check the journal for actual work done — job counts, rows
+  written, points cleared.
+- **Sample metrics repeatedly.** A single Qdrant reading can catch a mid-reindex value that
+  coincidentally looks right. Take 5 consecutive samples and require a plateau.
+- **Distrust agent claims, including your own earlier ones.** Every number in this document was
+  read off the host.
+
+---
+
+## Current Live State
+
+### On AIWA (Proxmox host, `192.168.1.12`, Orca env `aiwa-host`)
+
+| Item | Value |
+|---|---|
+| Timer | `hcp-estimates-sync.timer` — enabled/active, next elapse **Sun 2026-08-02 ~03:30 CDT**, `Persistent=yes`, `RandomizedDelaySec=5min` |
+| Units | `/etc/systemd/system/hcp-estimates-sync.{service,timer}`, root:root 644, sha256-verified against repo copies |
+| Payload | `/opt/hcp-estimates-sync/` — `sync-estimates.mjs`, `hcp-estimates-sync.env`, `secrets/hcp-cookies.json` |
+| Service | `inactive` (correct — oneshot at rest) |
+| Host TZ | `America/Chicago` (CDT, -0500) |
+| Qdrant | `grizzly_hcp` at 2120 points, green |
+
+### On CartersPC
+
+| Item | Value |
+|---|---|
+| PM2 `sync-estimates-weekly` | **DELETED.** Dump went 15 → 13 entries, no `cron_restart` remaining |
+| Dump backup | `C:\ProgramData\pm2\dump.pm2.bak-pre-sync-estimates-delete-20260727` (565,917 bytes, 15 entries) |
+| Rollback | **Recreate** the PM2 entry — full definition in Section 10 of the runbook. `pm2 start` will NOT work; the entry no longer exists. |
+
+Note: `pm2 save` also pruned `customer-chat-server` from the dump. That is expected, not a loss —
+that service was already relocated to AIWA as part of Carter's ongoing PM2 migration. Expect more
+such dump/live gaps while that migration continues.
+
+---
+
+## Evidence From the Completed Phase
+
+Kept for audit. Skip if you only need to start the next task.
+
+### Manual run (unsandboxed, 2026-07-28 03:04 UTC)
+
+Exit 0. 1073 jobs over 11 pages, line items on 1065/1073, CSV 353239 bytes — the same size the PC
+produced the prior Sunday. Archived to `processed/20260728_030851_estimates-enriched.csv`. Qdrant
+went 2120 → 1147 (stale cleared) → walked back to **2120 exactly** and held.
+
+### Hardened path validation (2026-07-28 04:19 UTC)
+
+`systemctl start hcp-estimates-sync.service` → `Result=success`, `ExecMainStatus=0`, 43s wall,
+1.901s CPU, 75.9M peak. Identical pipeline behavior: 1073 jobs, 1065/1073 with line items, CSV
+353239 bytes.
+
+Every sandbox directive verified live from inside the running process, not inferred from the unit
+file:
 
 | Directive | Evidence |
 |---|---|
 | sandbox applied at all | job mount ns `4026533296` ≠ PID 1 `4026531832` |
 | `NoNewPrivileges=yes` | `/proc/<pid>/status` → `NoNewPrivs: 1` |
-| `ProtectSystem=full` | `touch /usr/_probe` and `/etc/_probe` → `Read-only file system` |
-| `ProtectHome=yes` | `/home` 0 entries; `/root` empty |
+| `ProtectSystem=full` | `touch /usr/_probe`, `/etc/_probe` → `Read-only file system` |
+| `ProtectHome=yes` | `/home` 0 entries, `/root` empty |
 | `PrivateTmp=yes` | `/tmp` 0 entries (host `/tmp` is not empty) |
-| required write paths | `/opt/hcp-estimates-sync` and the ingest dir both writable |
+| required write paths | `/opt/hcp-estimates-sync` and ingest dir both writable |
 
-Downstream confirmed: CSV mtime `23:20:37.364` matches `ExecMainExitTimestamp` exactly; ingest
-archived it to `processed/20260728_042403_estimates-enriched.csv` and drained the ingest dir;
-Qdrant `grizzly_hcp` read **2120 green on five consecutive 15s samples**, proving a settled
-plateau rather than a coincidental mid-reindex reading.
+Downstream: CSV mtime `23:20:37.364` matched `ExecMainExitTimestamp` exactly; ingest archived to
+`processed/20260728_042403_estimates-enriched.csv` and drained the dir; Qdrant read **2120 green on
+five consecutive 15s samples**.
 
-Note the 43s runtime is the job alone. The ~4 minutes observed on the earlier run spanned job
-start through downstream ingest and re-embedding, which is a different measurement.
+The 43s runtime is the job alone. An earlier "~4 minutes" figure spanned job start through
+downstream re-embedding — a different measurement, not a regression.
 
-## What Is NOT Done Yet
+---
 
-- Nothing blocking. The timer is armed and the exact execution path it will use has been proven
-  end to end.
+## Architecture Reference
 
-## PM2 Retirement — Why `delete`, Not `stop`
+### Code changes that made relocation possible
 
-`pm2 stop` would **not** have worked. In PM2 7.0.3 only `deleteProcessId` and `restartProcessId`
-call `God.deleteCron()`; `stopProcessId` never does. `God.registerCron()` also runs before the
-`autostart === false` check, so a never-started entry still has an armed cron. This entry's
-resting state *is* `stopped` (`autorestart: false`), and it fired at `created_at 2026-07-26
-02:00:02` while showing `stopped` — so status is not a usable signal for whether the schedule is
-live. Verify against `C:\ProgramData\pm2\dump.pm2`, not the CLI table.
+| File | What it does |
+|------|-------------|
+| `src/hcp/auth-cookies.ts` | Playwright-free half of HCP auth. Reads cookie JSON at `HCP_COOKIES_FILE`, returns a `Cookie:` header. |
+| `src/hcp/auth-login.ts` | Interactive login via Playwright. Only runs on `npm run login`. |
+| `src/hcp/auth.ts` | Compatibility shim re-exporting both halves so existing importers are unchanged. |
+| `src/hcp/rag-publish.ts` | Makes publish switchable: `remote` (original key-based path) or `local` (direct HTTP to Qdrant + file copy). **This is the key abstraction to reuse for the next consumer.** |
+| `dist/sync-estimates.mjs` | esbuild self-contained bundle (`npm run build:sync-estimates`) — no Playwright, no `node_modules` on target. Gitignored; rebuild before deploying. |
+| `deploy/aiwa/` | `hcp-estimates-sync.{service,timer,env.example}`, validated with `systemd-analyze verify`. |
 
-Rollback definition and the two Windows gotchas that bit during the cutover (`gsudo cmd /c "a && b"`
-dropping to an interactive shell; a batch file needing `call pm2 …` or later lines are silently
-skipped) are recorded in Sections 7.0 and 10 of `docs/AIWA-DEPLOY-sync-estimates.md`.
+### Configuration
 
-Pre-cutover dump backup: `C:\ProgramData\pm2\dump.pm2.bak-pre-sync-estimates-delete-20260727`.
+Config is entirely environment variables. On AIWA they come from
+`/opt/hcp-estimates-sync/hcp-estimates-sync.env` (template: `deploy/aiwa/hcp-estimates-sync.env.example`).
+On the PC, from `.env`.
 
-`pm2 save` also dropped `customer-chat-server` from the dump, because it was in the dump but not
-in the live process list. That is correct, not a loss: Carter has relocated that service to AIWA
-as part of an ongoing migration of PC PM2 entries. Expect further such gaps between the dump and
-the live list while that migration continues — a stale dump entry is the normal footprint of an
-already-migrated service, so re-saving the dump prunes them.
-
-## Configuration
-
-The job is configured entirely through environment variables. On AIWA they come from
-`/opt/hcp-estimates-sync/hcp-estimates-sync.env`, whose committed template is
-`deploy/aiwa/hcp-estimates-sync.env.example`. On the PC they come from `.env`.
-
-| Variable | Default | Purpose |
-|----------|---------|---------|
-| `RAG_TARGET` | `remote` | `remote` = original SSH+SCP path; `local` = direct HTTP to Qdrant + local file copy. AIWA sets `local`. |
-| `QDRANT_URL` | `http://localhost:6333` | Qdrant endpoint used when `RAG_TARGET=local`. |
+| Variable | AIWA value | Purpose |
+|----------|-----------|---------|
+| `RAG_TARGET` | `local` | `local` = direct Qdrant HTTP + local copy. `remote` = original key-based path. |
+| `QDRANT_URL` | `http://localhost:6333` | Qdrant endpoint when `RAG_TARGET=local`. |
 | `QDRANT_COLLECTION` | `grizzly_hcp` | Collection whose stale `type=job` points get cleared. |
-| `RAG_INGEST_DIR` | `/mnt/samsung-sata/mav-rag/hcp-exports` | Directory the enriched CSV is copied into when `RAG_TARGET=local`. |
-| `ESTIMATES_CSV_PATH` | repo-relative | Where the job writes the CSV before publishing it. |
-| `HCP_COOKIES_FILE` | `auth/hcp-cookies.json` | HCP session cookie JSON. **Secret — never committed.** |
+| `RAG_INGEST_DIR` | `/mnt/samsung-sata/mav-rag/hcp-exports` | Watched dir; the ingest service archives from here. |
+| `ESTIMATES_CSV_PATH` | `/opt/hcp-estimates-sync/estimates.csv` | Where the CSV is written before publishing. |
+| `HCP_COOKIES_FILE` | `/opt/hcp-estimates-sync/secrets/hcp-cookies.json` | **Secret — never committed.** |
 
-`RAG_TARGET=remote` additionally honors `SSH_KEY`, `PROXMOX`, and `REMOTE_PATH`; those exist
-only to keep the PC rollback path working and should not be set on AIWA.
+`RAG_TARGET=remote` also honors `SSH_KEY`, `PROXMOX`, `REMOTE_PATH`. Those exist only for the PC
+rollback path and must not be set on AIWA.
 
-## Environments
+### Ingest mechanism
 
-- **Windows PC (current):** unchanged. Playwright login still works, `RAG_TARGET` still defaults
-  to `remote`. This is the rollback path.
-- **Proxmox AIWA (target):** systemd timer → `/usr/bin/node /opt/hcp-estimates-sync/sync-estimates.mjs`,
-  Sundays 03:30 America/Chicago. With `RAG_TARGET=local` both remote operations become local,
-  so the job needs no SSH key at all.
+`mav-rag` runs a `watchdog.observers.Observer` on `/data/hcp-exports`, bind-mounted from
+`/mnt/samsung-sata/mav-rag/hcp-exports`. Dropping a file is sufficient — no API call needed. Files
+are archived to `/mnt/samsung-sata/mav-rag/processed/` with a UTC-timestamp prefix.
 
-Verified read-only on the host 2026-07-26: node `/usr/bin/node` v22.23.1, TZ `America/Chicago`,
-ingest directory present, Qdrant answering with the `grizzly_hcp` collection.
+### HCP auth model
 
-## Key File Locations
+Browser-session cookies, not an API key. Runtime is a plain `fetch` with a `Cookie:` header.
+Expiry surfaces as a 401 and requires a manual `npm run login` (Playwright) on the PC, then
+re-copying the cookie file to AIWA. **This is the most likely real-world failure mode for the
+weekly run.**
 
-| Path | Role |
-|------|-----|
-| `src/hcp/sync-estimates.ts` | Main job source |
-| `dist/sync-estimates.mjs` | Bundled, Playwright-free output (gitignored — rebuild before deploying) |
-| `deploy/aiwa/` | `hcp-estimates-sync.{service,timer,env.example}` |
-| `docs/AIWA-DEPLOY-sync-estimates.md` | Operator runbook |
-| `docs/superpowers/specs/2026-07-24-sync-estimates-aiwa-relocation-design.md` | Design spec |
+---
+
+## Repo Facts
+
+- Repo: `C:\Workspace\Active\grizzly-hcp`
+- Branch: `sync-estimates-aiwa`, pushed to `https://github.com/Maverick-Core-Software/grizzly-hcp.git`
+- Relevant commits: `790998f` (test run + PM2 retirement), `0220317` (timer cutover),
+  `06dbe06` (hardened path validation + journal)
+- Brain vault commit: `f9b80d9` in `C:\Workspace\Active\brain`
+- `git status` should show only `?? .env.bak-pre-lxc-20260721-130527` — leave it untracked.
+
+## Loose Ends (non-urgent, unrelated to the mission)
+
+- `weekly-sync-all.ps1` has a stale `$ProjectDir = "C:\Users\carte\Grizzly-HCP"` that breaks that
+  scheduled task every Sunday.
+- Credentials in `.env.bak-pre-lxc-20260721-130527` are worth rotating.
