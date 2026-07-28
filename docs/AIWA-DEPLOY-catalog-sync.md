@@ -205,6 +205,10 @@ materials), customers ~973, estimates ~810 estimates producing ~948 option rows.
 
 ## 8. Installing and enabling the timer
 
+> **Done on 2026-07-28.** The timer is installed and enabled; next elapse
+> Sun 2026-08-02 04:33:37 CDT. This section is retained for rebuilds and for
+> verifying the installed state — re-running it is not required.
+
 ### 8.1 Confirm there is no collision with the 03:30 timer
 
 `hcp-estimates-sync.timer` fires **Sundays 03:30** and its downstream
@@ -273,7 +277,7 @@ curl -s http://localhost:6333/collections/grizzly_hcp/points/count \
 
 Repeat with `"job"` and `"customer"`. What to expect:
 
-- **`estimate`** — roughly one point per estimate option (~948 as of
+- **`estimate`** — roughly one point per estimate option (948 as of
   2026-07-28). A count of 0 after a successful run means the mav-rag ingest
   change is not live: check Section 2.
 - **`job`** — **unchanged** from the pre-run baseline taken in Section 3. If this
@@ -281,6 +285,44 @@ Repeat with `"job"` and `"customer"`. What to expect:
   run.
 - **`customer`** — grows toward the customer count, never shrinks; this path is
   upsert-only.
+
+Verified baseline, immediately after the 2026-07-28 manual run: `estimate` 948,
+`job` 1073, `customer` 1130, `grizzly_hcp` total 3151, `pricebook` 395. The three
+type counts sum exactly to the total, so any future total that exceeds the sum of
+the three means points are being written with an unexpected `type`.
+
+**Counts are not 1:1 with exported rows** — 973 customers produced 1130 customer
+points and 267 price book rows produced 395 `pricebook` points, because records
+are chunked. Do not treat that mismatch as a fault.
+
+### 10.1 The better check for "`job` unchanged"
+
+The count comparison above only works if someone remembered to take a per-type
+baseline *before* the run, and even then equal counts can hide a delete followed
+by a reinsert. Prefer this instead — it needs no baseline and cannot be fooled:
+
+```bash
+cat > /tmp/s.json <<'EOF'
+{"limit":3,"with_payload":["ingested_at","source"],
+ "filter":{"must":[{"key":"type","match":{"value":"job"}}]}}
+EOF
+curl -s http://localhost:6333/collections/grizzly_hcp/points/scroll \
+  -H 'Content-Type: application/json' --data-binary @/tmp/s.json \
+  | grep -oE '"ingested_at":"[^"]{16}'
+```
+
+Job points must still carry `ingested_at` timestamps from the **03:30 jobs run**,
+not from the catalog run that just finished. On 2026-07-28 the catalog run
+executed 13:29–13:38 and job points still read `2026-07-28T04:22`–`04:23`, which
+proves they were neither rewritten nor deleted. Swap `"job"` for `"customer"` or
+`"estimate"` and the timestamps should instead fall *inside* the run window.
+
+Corroborate from the ingest log — for a healthy catalog run it contains exactly
+three upserts and **no delete and no job-typed operation at all**:
+
+```bash
+docker logs --tail 4000 mav-rag-ingest 2>&1 | grep -i upsert | tail -3
+```
 
 Also confirm the collection totals and that the CSVs were consumed:
 

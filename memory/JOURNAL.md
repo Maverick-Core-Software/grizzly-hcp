@@ -125,3 +125,50 @@ Findings worth keeping:
 Remaining deploy-key consumers: `Watch-HCPExports`, `index-docs`, `sync-from-proxmox.ps1`. The
 five publish scripts are gone from the repo but their replacement is not yet running on AIWA, so
 their share of the key's uses is only retired once `hcp-catalog-sync` is deployed.
+
+## 2026-07-28 — hcp-catalog-sync deployed to AIWA and scheduled
+
+The build from earlier today went live. Everything went through Orca in the `aiwa-host`
+environment; the deploy key was not used for any step.
+
+**What was deployed.** The mav-rag ingest was rebuilt with the new `estimate` branch (a rebuild,
+not a restart — `docker-compose.yml` declares `build: ./ingest`, so a restart would have silently
+kept the old image). The bundle and env file were installed under `/opt/hcp-catalog-sync/`, then
+the service unit, then — after a successful manual run and Carter's approval — the timer.
+
+Every transferred file was sha256-verified byte-exact on arrival: ingest `main.py` `7af75e7c…`,
+bundle `93e8d175…`, env `0dc3f48c…`, service unit `7a7e3258…`, timer unit `014f105d…`.
+
+**The manual run.** `Result=success`, exit 0. 267 price book rows, 973 customers, and 810 estimates
+producing 948 option rows (902 with line items). The rebuilt ingest picked all three CSVs up on its
+own and archived them, skipping nothing on either the price book or the estimates leg.
+
+**Timer.** Enabled 2026-07-28, first unattended fire Sun 2026-08-02 04:33:37 CDT (04:30 plus the
+300s jitter), one hour clear of the 03:31 jobs timer. Neither timer has yet fired autonomously.
+
+### Findings worth keeping
+
+- **Verify "nothing was disturbed" with payload timestamps, not counts.** The runbook asked for a
+  before/after count comparison on `type == "job"`, but no per-type baseline had been captured —
+  only the collection total. Reading `ingested_at` off sampled job points answered it outright:
+  they still read `04:22`–`04:23` after a run that executed `13:29`–`13:38`, so they were provably
+  untouched. This is strictly stronger than a count diff, which can be fooled by a delete followed
+  by a reinsert of the same size. The runbook's section 10 now leads with this technique.
+- **Qdrant point counts are not 1:1 with exported rows.** 973 customers → 1130 customer points;
+  267 price book rows → 395 `pricebook` points. Records are chunked. A mismatch between an export
+  count and a point count is not by itself a fault, and reading it as one wastes a debugging cycle.
+- **The three type counts summed exactly to the collection total** (948 + 1073 + 1130 = 3151). That
+  makes a useful invariant: a total exceeding the sum of known types means something is writing
+  points with an unexpected `type`.
+- **Don't trust a CRLF check made with `grep -c $'\r'`.** It reported 18 "CRLF lines" in a systemd
+  unit that was pure LF — the escape didn't expand and it counted lines containing the letter `r`.
+  The reliable check is comparing the working-copy sha256 against `git show HEAD:<path>`; git
+  normalises `text` blobs to LF, so equal hashes prove the working copy has no CRs.
+- **The 300-char Orca preview cap applies to the echoed command as well as its output.** Long
+  one-liners consume the whole budget and the result never becomes visible. The fix is to keep the
+  *invocation* short: transfer a script via base64, have the script `clear` and format its own
+  output, then run it with a short command.
+
+Remaining deploy-key consumers: `Watch-HCPExports`, `index-docs`, `sync-from-proxmox.ps1`.
+`Watch-HCPExports` should now be dead on its own — nothing on the PC produces the files it watches
+any more — and is the natural next target.

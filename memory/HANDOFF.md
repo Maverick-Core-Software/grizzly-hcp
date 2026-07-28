@@ -1,8 +1,9 @@
 # Handoff — HCP Sync AIWA Relocation
 
-**Status as of 2026-07-28:** `sync-estimates` is relocated and live. `hcp-catalog-sync` is
-**installed on AIWA and has run successfully once, by hand. Its timer is NOT enabled** — that is
-the only step left, and it is waiting on Carter. Read "Start Here" and go.
+**Status as of 2026-07-28:** both jobs are relocated and live on AIWA. `sync-estimates` (jobs) runs
+Sundays 03:30; `hcp-catalog-sync` (price book, customers, estimates) runs Sundays 04:30 and has
+been verified by a manual run. **7 of the deploy key's uses are now gone.** The next agent's job is
+the *remaining* key consumers — see "Then: the remaining key consumers". Read "Start Here" and go.
 
 ---
 
@@ -28,25 +29,25 @@ call `/alpha/jobs`. The name is historical and deliberately kept. It runs on the
 systemd timer, publishes to Qdrant over localhost, and touches no key at all. The PC's PM2 trigger
 for it is deleted. That eliminated **2 of the key's uses**.
 
-**`hcp-catalog-sync` is installed and proven, but not yet scheduled.** It exports the price book,
-customers, and — for the first time anywhere — real HCP estimates, and publishes all three CSVs
-into the RAG ingest directory. The five PC-side publish scripts it replaces have been **deleted**
-from this repo, so the PC can no longer do this work at all. That accounts for **5 more of the
-key's uses**, but the work only actually happens on a schedule once the timer is enabled.
+**`hcp-catalog-sync` is deployed, verified, and scheduled.** It exports the price book, customers,
+and — for the first time anywhere — real HCP estimates, and publishes all three CSVs into the RAG
+ingest directory. The five PC-side publish scripts it replaces have been **deleted** from this
+repo, so the PC can no longer do this work at all. That eliminated **5 more of the key's uses**,
+bringing the total to 7.
 
-Steps 1–4 of the deployment were completed on 2026-07-28 (see "Deployment result" below). The
-mav-rag ingest was rebuilt with the `estimate` branch, the bundle and env file were installed under
-`/opt/hcp-catalog-sync/`, and one manual run succeeded end to end.
+The whole deployment ran on 2026-07-28: the mav-rag ingest was rebuilt with the `estimate` branch,
+the bundle and env file were installed under `/opt/hcp-catalog-sync/`, one manual run succeeded end
+to end, and the timer was enabled. Details below.
 
-### What to do next — enable the timer
+### What to do next
 
-The only remaining step is **section 8 of `docs/AIWA-DEPLOY-catalog-sync.md`**: install
-`hcp-catalog-sync.timer` (Sundays 04:30 — deliberately an hour after the 03:30 jobs timer, which
-re-embeds for minutes into the same ingest directory) and `systemctl enable --now` it. The timer
-unit file has deliberately **not** been copied to `/etc/systemd/system/` — only the `.service` unit
-is installed, so nothing can fire on a schedule by accident.
+Nothing is outstanding on `hcp-catalog-sync`. Move to the remaining key consumers in the table
+below — that is what still blocks retiring the key.
 
-That step changes live state and needs Carter's explicit approval at the moment you do it.
+The one thing to watch: **the first unattended run is Sun 2026-08-02 ~04:33 CDT.** It has never run
+on the timer, only by hand. Check `journalctl --identifier=hcp-catalog-sync` after it, per section
+9 of the runbook. The most likely failure is an expired HCP session (runbook section 11), since the
+cookie file is shared with the jobs job and nothing refreshes it automatically.
 
 ### Deployment result — 2026-07-28
 
@@ -69,17 +70,33 @@ The rebuilt ingest picked all three up on its own and archived them, skipping no
 Qdrant after the run — `grizzly_hcp` total 3151, which is exactly `estimate` 948 + `job` 1073 +
 `customer` 1130, so no points fall outside those three types. `pricebook` collection 395.
 
-**Caveat on the `job`-unchanged check:** only the *collection total* (2120) was captured before the
-run, not per-type counts, so the runbook's "`job` must be unchanged" check could not be verified by
-comparison. What *was* verified is stronger in one respect and weaker in another: the ingest log for
-the run window contains **no delete operation and no job-typed operation at all** — only the three
-upserts above. Capture per-type baselines before the next run so the comparison is available.
+**How "`job` unchanged" was actually verified.** Per-type counts were *not* captured before the run
+(only the collection total, 2120), so the runbook's before/after count comparison was unavailable.
+It was replaced with a better check — reading `ingested_at` off sampled points of each type:
+
+| Type | Count | `ingested_at` on sampled points |
+|---|---|---|
+| `job` | 1073 | **2026-07-28T04:22 – 04:23** |
+| `customer` | 1130 | 2026-07-28T13:31 – 13:33 |
+| `estimate` | 948 | 2026-07-28T13:34 – 13:37 |
+
+The catalog run executed 13:29–13:38. Job points still carry timestamps from 04:22 — this morning's
+jobs sync — so they were provably neither rewritten nor deleted. This check is strictly better than
+a count comparison, because equal counts could still hide a delete-and-reinsert; the timestamps
+cannot. **Prefer it over the count diff on future runs** (it is now section 10 of the runbook).
+
+Corroborating: the ingest log for the run window contains no delete operation and no job-typed
+operation at all — only the three upserts above.
+
+Also worth knowing: point counts are **not** 1:1 with exported rows. 973 customers → 1130 customer
+points, 267 price book rows → 395 `pricebook` points. Records are chunked. Do not treat a mismatch
+between an export count and a point count as a fault on its own.
 
 ### Then: the remaining key consumers
 
 | Consumer | Notes |
 |---|---|
-| `Watch-HCPExports` | A PC-side file watcher. Once `hcp-catalog-sync` runs on AIWA, nothing produces the files it watches — check whether it is simply dead. |
+| `Watch-HCPExports` | A PC-side file watcher. `hcp-catalog-sync` now runs on AIWA and the PC-side publish scripts are deleted, so **nothing on the PC produces the files it watches any more** — it is almost certainly already dead. Confirm and remove. Start here; it should be the easiest of the three. |
 | `index-docs` | Check whether its inputs even originate on the PC any more. |
 | `sync-from-proxmox.ps1` | Pulls *from* AIWA. Likely needs a different answer than relocation. |
 
@@ -89,18 +106,28 @@ verified (see "How this work gets verified" below).
 
 ### One item still pending on the completed phase
 
-The timer has been validated but **has never fired autonomously**. First real fire is
-**Sun 2026-08-02 03:30 CDT**.
+**Neither timer has ever fired autonomously.** Both were validated by manual runs only. The first
+real fires are:
 
-A scheduled verification task is already registered and will run itself — you do not need to set
-it up:
+| Timer | First unattended fire |
+|---|---|
+| `hcp-estimates-sync` (jobs) | **Sun 2026-08-02 03:31 CDT** |
+| `hcp-catalog-sync` (price book, customers, estimates) | **Sun 2026-08-02 ~04:33 CDT** |
+
+A scheduled verification task is registered for the **jobs** timer and will run itself — you do not
+need to set it up:
 
 - **`C:\Users\carte\.claude\scheduled-tasks\verify-hcp-estimates-sync-timer\SKILL.md`**
 - Fires once at **2026-08-02 03:35 CDT**, then auto-disables.
 - Caveat: scheduled tasks only run while the Claude app is open. If it was closed at 03:35, the
   task runs on next launch — still valid, since all the evidence it reads is persistent.
 
-If that check has already run by the time you read this, its result is in `memory/JOURNAL.md`.
+**There is no equivalent scheduled check for `hcp-catalog-sync`** — creating one is persistent
+configuration and was not authorised. Either ask Carter to approve one (it would need to fire after
+04:40, since the catalog run itself takes ~4 minutes and the ingest another ~5), or verify that
+first fire by hand using sections 9 and 10 of `docs/AIWA-DEPLOY-catalog-sync.md`.
+
+If either check has already run by the time you read this, its result is in `memory/JOURNAL.md`.
 If it reported FAIL, **that takes priority over starting new relocation work.**
 
 ---
@@ -201,7 +228,7 @@ The standard the last phase was held to. Match it.
 | Host TZ | `America/Chicago` (CDT, -0500) |
 | Qdrant | `grizzly_hcp` at 3151 points (`estimate` 948 + `job` 1073 + `customer` 1130), `pricebook` at 395, green. Was 2120 / 392 before the 2026-07-28 catalog run. |
 | Node | `/usr/bin/node`, v22.23.1 |
-| `hcp-catalog-sync` | **Installed, run once by hand, timer NOT enabled.** `/opt/hcp-catalog-sync/sync-catalog.mjs` (sha256 `93e8d175…97e2097dfd`) + `hcp-catalog-sync.env` (640). `/etc/systemd/system/hcp-catalog-sync.service` only — **no `.timer` file exists on the host**, so it cannot fire on a schedule. Last manual run 2026-07-28, `Result=success`. |
+| `hcp-catalog-sync` | **Deployed and scheduled.** Timer enabled/active, next elapse **Sun 2026-08-02 04:33:37 CDT** (04:30 + `RandomizedDelaySec=300`), `Persistent=true`. Units at `/etc/systemd/system/hcp-catalog-sync.{service,timer}`, root:root 644, sha256-verified against the repo (`7a7e3258…` / `014f105d…`). Payload `/opt/hcp-catalog-sync/sync-catalog.mjs` (sha256 `93e8d175…97e2097dfd`) + `hcp-catalog-sync.env` (640). Service `inactive` (correct — oneshot at rest). Last run 2026-07-28 manual, `Result=success`. **Has never yet run unattended.** |
 | mav-rag ingest | **Rebuilt with the `estimate` branch.** `/opt/mav-rag/ingest/main.py` = sha256 `7af75e7c…86a9a88fb3`, verified inside the running container with `docker exec mav-rag-ingest sha256sum /app/main.py`. Rollback copy at `/opt/mav-rag/ingest/main.py.bak-20260728` (sha256 `fd9054ae…87c21e3`, matches `deploy/mav-rag/main.py.snapshot-20260728`). `/opt/mav-rag` is not a git repo. |
 
 ### On CartersPC
