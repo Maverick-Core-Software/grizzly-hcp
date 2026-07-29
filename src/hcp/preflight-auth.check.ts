@@ -65,6 +65,8 @@ async function main(): Promise<void> {
   // The marker may appear only where it is intentionally printed or asserted.
   const SKIP_DIRS = new Set(["node_modules", "dist", ".git", ".pi-subagents"]);
   const occurrences: Record<string, number> = {};
+  // Same walk also catches a re-added localhost default for HCP_MCP_URL — see §2b.
+  const localhostDefaults: string[] = [];
   function walk(dir: string): void {
     for (const entry of readdirSync(dir)) {
       if (SKIP_DIRS.has(entry)) continue;
@@ -74,7 +76,9 @@ async function main(): Promise<void> {
       if (!/\.tsx?$/.test(entry)) continue;
       const txt = readFileSync(p, "utf-8");
       const n = txt.split(MARKER).length - 1;
-      if (n > 0) occurrences[relative(repoRoot, p).replace(/\\/g, "/")] = n;
+      const rel = relative(repoRoot, p).replace(/\\/g, "/");
+      if (n > 0) occurrences[rel] = n;
+      if (/process\.env\.HCP_MCP_URL\s*\|\|\s*["'`][^"'`]/.test(txt)) localhostDefaults.push(rel);
     }
   }
   walk(repoRoot);
@@ -105,6 +109,18 @@ async function main(): Promise<void> {
     );
   }
   console.log(`✓ Marker uniqueness: occurrences = ${JSON.stringify(occurrences)}`);
+
+  // ─── 2b. HCP_MCP_URL has no non-empty default anywhere ───────────────────
+  // A localhost fallback silently reroutes a misconfigured caller to a stray
+  // PC-local daemon instead of failing, which is how work stays pinned to
+  // CartersPC after the CT102 cutover. Empty-string (`|| ""`) is fine — the
+  // consumer still throws before connecting.
+  assert.deepEqual(
+    localhostDefaults,
+    [],
+    `HCP_MCP_URL must have no non-empty default; found one in: ${localhostDefaults.join(", ")}`,
+  );
+  console.log("✓ HCP_MCP_URL: no non-empty default in any source file");
 
   // ─── 3. Subprocess: CLI exit-code + marker contract ──────────────────────
   // Either outcome is valid. Assert the matching invariant honestly.

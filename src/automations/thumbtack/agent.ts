@@ -24,7 +24,7 @@ const DATA_DIR = path.join(REPO_ROOT, "data");
 const SEEN_FILE = path.join(DATA_DIR, "seen-thumbtack.json");
 
 const POLL_MS = parseInt(process.env.THUMBTACK_POLL_MS || "120000", 10); // 2 min
-const HCP_MCP_URL = process.env.HCP_MCP_URL || "http://127.0.0.1:7332/";
+const HCP_MCP_URL = process.env.HCP_MCP_URL || ""; // required — see getClient()
 const HCP_MCP_TOKEN = process.env.HCP_MCP_TOKEN || "";
 
 // ── MCP Client (same pattern as src/hcp/mcp-client.ts) ────────────────
@@ -33,6 +33,8 @@ let clientPromise: Promise<Client> | null = null;
 
 function getClient(): Promise<Client> {
   if (clientPromise) return clientPromise;
+  // Checked here, not at import, so the module still loads without HCP env set.
+  if (!HCP_MCP_URL) throw new Error("HCP_MCP_URL required (no localhost default)");
   if (!HCP_MCP_TOKEN) throw new Error("HCP_MCP_TOKEN required");
   clientPromise = (async () => {
     const transport = new StreamableHTTPClientTransport(new URL(HCP_MCP_URL), {
