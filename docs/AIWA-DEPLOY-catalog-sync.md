@@ -218,11 +218,26 @@ materials), customers ~973, estimates ~810 estimates producing ~948 option rows.
 > Previous unit files are backed up on AIWA as
 > `/etc/systemd/system/<unit>.service.bak-20260729T042100Z` — that is the rollback.
 >
-> **Known gap:** nothing on AIWA currently alarms on either unit. A host-wide
-> search found `HCP_AUTH_PREFLIGHT_FAIL` only inside the deployed bundles
-> themselves; no supervisor config references either unit name. The timeout makes
-> a hang land in `failed` rather than hiding in `activating`, but a human still
-> has to look. Wiring both units into the Hermes supervisor is open work.
+> **Gap closed 2026-07-29.** Both units are now monitored by the Hermes
+> supervisor (`hermes-triage` on AIWA, commit `1425783` on `hermes-supervisor`).
+> Its `check_sync_jobs()` sensor reports two independent signals:
+>
+> - `hcp_sync_job_failed` (**critical**) — `systemctl show -p ActiveState -p Result`
+>   per unit. `Result=` is meaningful between runs, unlike `is-active`, which is
+>   `inactive` ~100% of the time for a healthy timer-driven `Type=oneshot`. The
+>   `TimeoutStartSec` above turns a hung success into `Result=timeout`, so a hang
+>   lands here instead of hiding in `activating`.
+> - `hcp_sync_job_stale` (**warning**) — worst per-kind mtime of
+>   `*_{pricebook,customers,estimates}.csv` in `/mnt/samsung-sata/mav-rag/processed`,
+>   8-day threshold (one missed weekly run). Catches a unit that reports success
+>   but wrote nothing the RAG could ingest. Deliberately not sourced from systemd
+>   timestamps — `LastTriggerUSec` / `InactiveEnterTimestamp` / `ExecMainExitTimestamp`
+>   were verified empty after a `daemon-reload`, so they carry no durable history.
+>
+> Live at 00:00:45 CDT 2026-07-29; first observation after restart read
+> `{"failed": false, "stale": false, "oldest_csv_age_days": 0.65}`.
+> Nothing greps `HCP_AUTH_PREFLIGHT_FAIL` on either host — the fail marker is
+> still write-only, and the unit exit status is what actually alarms.
 
 ### 8.1 Confirm there is no collision with the 03:30 timer
 
