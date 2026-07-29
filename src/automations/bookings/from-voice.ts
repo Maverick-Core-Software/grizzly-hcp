@@ -18,7 +18,7 @@ import 'dotenv/config';
 import fs from 'fs';
 import path from 'path';
 import { searchCustomer, createCustomer, assignTechnician, createEstimate, addCustomerAddress } from '../../hcp/gateway.js';
-import { updateEstimateNotes, resolveNumericCustomerId } from '../../hcp/estimates.js';
+import { updateEstimateNotes, resolveNumericCustomerId, findCustomerAddress } from '../../hcp/estimates.js';
 import { resolveAddress } from '../../hcp/geocode.js';
 import type { ResolvedAddress } from '../../hcp/geocode.js';
 
@@ -207,19 +207,30 @@ try {
     console.log(`[from-voice] Matched existing customer ${customer.id}`);
   }
 
-  // 3. Write the address onto the customer (or fall back to old addressId on geocode failure)
+  // 3. Resolve the address on the customer: reuse the matching one if they already have it
+  //    (repeat callers must not accumulate duplicate address records), otherwise add it.
+  //    Falls back to the old addressId on geocode failure.
   let addressId: string;
   if (resolvedAddress) {
-    const numericId = await resolveNumericCustomerId(customer.id);
-    addressId = await addCustomerAddress(numericId, {
+    const existingId = await findCustomerAddress(customer.id, {
       street: resolvedAddress.street,
-      city: resolvedAddress.city,
-      state: resolvedAddress.state,
       zip: resolvedAddress.zip,
-      latitude: resolvedAddress.latitude,
-      longitude: resolvedAddress.longitude,
     });
-    console.log(`[from-voice] Added service address ${addressId}`);
+    if (existingId) {
+      addressId = existingId;
+      console.log(`[from-voice] Reused existing service address ${addressId}`);
+    } else {
+      const numericId = await resolveNumericCustomerId(customer.id);
+      addressId = await addCustomerAddress(numericId, {
+        street: resolvedAddress.street,
+        city: resolvedAddress.city,
+        state: resolvedAddress.state,
+        zip: resolvedAddress.zip,
+        latitude: resolvedAddress.latitude,
+        longitude: resolvedAddress.longitude,
+      });
+      console.log(`[from-voice] Added new service address ${addressId}`);
+    }
   } else {
     addressId = customer.addressId ?? '';
     console.log(`[from-voice] Geocode failed — using fallback addressId "${addressId}"`);

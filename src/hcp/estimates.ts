@@ -337,6 +337,43 @@ export async function resolveNumericCustomerId(customerUuid: string): Promise<st
   return String(res.contact_info.id);
 }
 
+/**
+ * Find an address already on the customer that matches `addr`, so repeat callers don't
+ * accumulate duplicate address records. Returns the existing adr_xxx UUID, or null.
+ *
+ * Exact string comparison does not work here: the Census geocoder normalizes what the
+ * caller said ("15221 Berry Trail" → "15221 BERRY TRL"), so the same house produces two
+ * different strings. Matching on house number + zip (+ unit, when present) is
+ * unambiguous within a single customer's address list.
+ */
+export async function findCustomerAddress(
+  customerUuid: string,
+  addr: { street: string; zip: string; streetLine2?: string }
+): Promise<string | null> {
+  const houseNumber = (s: string) => (s.trim().match(/^\d+[a-zA-Z]?/) ?? [''])[0].toUpperCase();
+  const unit = (s?: string | null) => (s ?? '').replace(/[^a-zA-Z0-9]/g, '').toUpperCase();
+
+  const wantHouse = houseNumber(addr.street);
+  if (!wantHouse || !addr.zip) return null;
+
+  try {
+    const res = await hcpGet<{
+      addresses?: { data?: Array<{ id: string; street: string; zip: string; street_line_2?: string | null }> };
+    }>(`/alpha/customers/${customerUuid}?expand[]=addresses`);
+
+    const match = (res.addresses?.data ?? []).find(
+      (a) =>
+        houseNumber(a.street) === wantHouse &&
+        a.zip?.slice(0, 5) === addr.zip.slice(0, 5) &&
+        unit(a.street_line_2) === unit(addr.streetLine2)
+    );
+    return match?.id ?? null;
+  } catch {
+    // A failed lookup must not block the booking — fall through to creating an address.
+    return null;
+  }
+}
+
 /** Add a service address to an existing HCP customer (direct HTTP). Returns the new adr_xxx UUID. */
 export async function addCustomerAddress(
   numericCustomerId: string,
