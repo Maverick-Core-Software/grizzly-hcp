@@ -11,6 +11,16 @@ ExecStart=/usr/bin/node /opt/hcp-catalog-sync/sync-catalog.mjs
 EnvironmentFile=/opt/hcp-catalog-sync/hcp-catalog-sync.env
 SyslogIdentifier=hcp-catalog-sync
 
+# Type=oneshot defaults TimeoutStartSec to infinity. A run that finishes its
+# work but fails to release the MCP transport then wedges the unit in
+# "activating" forever, silently — the monitor only greps for
+# HCP_AUTH_PREFLIGHT_FAIL, which a hung success never prints. Bound it so the
+# unit lands in "failed" instead, which is visible.
+#
+# Observed runtime 76s (2026-07-28). 20m is ~15x headroom and still leaves the
+# unit dead long before the next weekly fire.
+TimeoutStartSec=1200
+
 # Hardening — this job only needs its own directory and the ingest directory
 ProtectSystem=full
 PrivateTmp=yes

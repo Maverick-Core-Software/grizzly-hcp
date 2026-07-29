@@ -11,6 +11,17 @@ ExecStart=/usr/bin/node /opt/hcp-estimates-sync/sync-estimates.mjs
 EnvironmentFile=/opt/hcp-estimates-sync/hcp-estimates-sync.env
 SyslogIdentifier=hcp-estimates-sync
 
+# Type=oneshot defaults TimeoutStartSec to infinity. A run that finishes its
+# work but fails to release the MCP transport then wedges the unit in
+# "activating" forever, silently — the monitor only greps for
+# HCP_AUTH_PREFLIGHT_FAIL, which a hung success never prints. Bound it so the
+# unit lands in "failed" instead, which is visible.
+#
+# Observed runtime 43s (2026-07-27). 15m is ~20x headroom and stays well inside
+# the ~55m worst-case gap before hcp-catalog-sync.timer fires at 04:30 — the two
+# jobs write the same ingest directory and must not overlap.
+TimeoutStartSec=900
+
 # Hardening — this job only needs its own directory and the ingest directory
 ProtectSystem=full
 PrivateTmp=yes
