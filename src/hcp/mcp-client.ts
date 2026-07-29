@@ -160,3 +160,26 @@ export async function updateJobSchedule(
 ): Promise<unknown> {
   return callTool<unknown>("update_job_schedule", { request_id: requestId, schedule_data: scheduleData });
 }
+
+/**
+ * Close the lazy singleton and release the transport's socket, so a process
+ * that ends by draining the event loop can actually exit. Without this the
+ * StreamableHTTP transport keeps a handle open forever and a `oneshot` unit
+ * hangs in `activating` after a fully successful run.
+ *
+ * ponytail: best-effort — a close failure is never worth failing a run that
+ * already succeeded, so everything is swallowed. Clearing clientPromise first
+ * means a later call simply reconnects. Upgrade path: surface close errors if
+ * a long-lived consumer ever needs reconnect-on-drop diagnostics.
+ */
+export async function closeClient(): Promise<void> {
+  const pending = clientPromise;
+  clientPromise = null;
+  if (!pending) return;
+  try {
+    const client = await pending;
+    await client.close();
+  } catch {
+    /* already dead or never connected — nothing to release */
+  }
+}

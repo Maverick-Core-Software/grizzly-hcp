@@ -17,6 +17,7 @@ import { runCustomersExport } from './export-customers.js';
 import { runEstimatesExport } from './export-estimates.js';
 import { deletePointsByType, publishCsv, resolveRagConfig } from './rag-publish.js';
 import { checkHcpAuth } from './preflight-auth.js';
+import { closeHcp } from './client.js';
 
 /** Distinctive marker the Hermes monitor greps the journal for. */
 const AUTH_FAIL_MARKER = 'HCP_AUTH_PREFLIGHT_FAIL';
@@ -121,6 +122,9 @@ async function run() {
 
   if (failed.length === 0) {
     console.log('\nDone. RAG will re-index automatically.');
+    // Release the MCP transport, otherwise this success path never drains the
+    // event loop and the oneshot unit hangs in `activating` (see closeHcp).
+    await closeHcp();
     return;
   }
 

@@ -13,10 +13,10 @@
  * Both subprocess outcomes are valid — we are verifying the plumbing, not the
  * live session. We assert the invariant that matches the observed outcome.
  *
- * The CLI runs in a child process (never in-process) because the daemon path
- * imports the MCP SDK, which leaves TCP handles open that prevent Node from
- * exiting. The child always calls process.exit() itself; the subprocess timeout
- * is a backstop only.
+ * The CLI runs in a child process (never in-process) so a hung or crashed run
+ * cannot take this check down with it; the subprocess timeout is a backstop
+ * only. That the child terminates by itself on the daemon path is a separate
+ * contract, asserted in mcp-close.check.ts.
  *
  * Run: npx tsx src/hcp/preflight-auth.check.ts
  */
@@ -84,6 +84,8 @@ async function main(): Promise<void> {
     "src/hcp/sync-catalog.ts",
     "src/hcp/sync-estimates.ts",
     "src/hcp/preflight-auth.check.ts",
+    // asserts the marker is ABSENT on a successful daemon-path probe
+    "src/hcp/mcp-close.check.ts",
   ]);
   const files = Object.keys(occurrences).sort();
   for (const f of files) {

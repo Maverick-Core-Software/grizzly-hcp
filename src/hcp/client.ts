@@ -149,3 +149,19 @@ export async function hcpDelete(path: string): Promise<void> {
 export function closeClient(): void {
   _cookieHeader = null;
 }
+
+/**
+ * Release whatever transport hcpGet is currently routing through, so an entry
+ * point that exits by draining the event loop terminates. On the cookie path
+ * there is nothing to release (fetch keepalive drains on its own); on the
+ * daemon path the MCP transport holds a socket open indefinitely.
+ *
+ * ponytail: mirrors hcpGet's dynamic import so the cookie path never pulls
+ * mcp-client (and the MCP SDK) into its module graph. Upgrade path: fold this
+ * into a real gateway object if a third transport ever appears.
+ */
+export async function closeHcp(): Promise<void> {
+  if (!_HCP_VIA_MCP) return;
+  const { closeClient: closeMcpClient } = await import("./mcp-client.js");
+  await closeMcpClient();
+}

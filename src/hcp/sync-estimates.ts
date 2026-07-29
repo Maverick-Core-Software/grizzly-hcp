@@ -11,7 +11,7 @@ import 'dotenv/config';
 import fs from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { hcpGet } from './client.js';
+import { closeHcp, hcpGet } from './client.js';
 import { deleteJobPoints, publishCsv, resolveRagConfig } from './rag-publish.js';
 import { checkHcpAuth } from './preflight-auth.js';
 
@@ -195,6 +195,10 @@ async function run() {
   console.log(`  Jobs synced:        ${allJobs.length}`);
   console.log(`  With line items:    ${withItems}`);
   console.log(`  Without line items: ${allJobs.length - withItems}`);
+
+  // Release the MCP transport, otherwise this success path never drains the
+  // event loop and the oneshot unit hangs in `activating` (see closeHcp).
+  await closeHcp();
 }
 
 run().catch(err => {
