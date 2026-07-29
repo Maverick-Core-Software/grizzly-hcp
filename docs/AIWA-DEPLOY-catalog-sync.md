@@ -206,8 +206,23 @@ materials), customers ~973, estimates ~810 estimates producing ~948 option rows.
 ## 8. Installing and enabling the timer
 
 > **Done on 2026-07-28.** The timer is installed and enabled; next elapse
-> Sun 2026-08-02 04:33:37 CDT. This section is retained for rebuilds and for
+> Sun 2026-08-02 04:33:05 CDT. This section is retained for rebuilds and for
 > verifying the installed state — re-running it is not required.
+>
+> **Amended 2026-07-28 (ref `0e89f1a`).** Both `.service` units gained a finite
+> `TimeoutStartSec` — 1200s here, 900s on `hcp-estimates-sync`. `Type=oneshot`
+> defaults it to infinity, so a run that completes its work but fails to release
+> the MCP transport would wedge the unit in `activating` forever. Installed via
+> `git show <ref>:deploy/aiwa/<unit>.service > /etc/systemd/system/<unit>.service`
+> plus `systemctl daemon-reload`; no restart was needed (both units inactive).
+> Previous unit files are backed up on AIWA as
+> `/etc/systemd/system/<unit>.service.bak-20260729T042100Z` — that is the rollback.
+>
+> **Known gap:** nothing on AIWA currently alarms on either unit. A host-wide
+> search found `HCP_AUTH_PREFLIGHT_FAIL` only inside the deployed bundles
+> themselves; no supervisor config references either unit name. The timeout makes
+> a hang land in `failed` rather than hiding in `activating`, but a human still
+> has to look. Wiring both units into the Hermes supervisor is open work.
 
 ### 8.1 Confirm there is no collision with the 03:30 timer
 
