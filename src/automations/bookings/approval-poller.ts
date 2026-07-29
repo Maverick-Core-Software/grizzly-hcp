@@ -21,9 +21,11 @@ import { updateEstimateNotes } from '../../hcp/estimates.js';
 
 const PENDING_FILE = path.resolve(process.cwd(), 'data/pending-bookings.jsonl');
 const INTERVAL_MS = Number(process.env.BOOKING_POLL_INTERVAL_MS ?? 60000);
-const PRO_UUIDS = [process.env.CARTER_PRO_UUID, process.env.JAIME_PRO_UUID].filter(
-  (u): u is string => Boolean(u)
-);
+// update_job_schedule needs numeric pro ids, not the "pro_..." uuids used for dispatch
+// (assignTechnician) — see src/hcp/schedule-payload.ts for the captured contract.
+const PRO_IDS = [process.env.CARTER_PRO_ID, process.env.JAIME_PRO_ID]
+  .filter((u): u is string => Boolean(u))
+  .map(Number);
 
 interface PendingBooking {
   estimateUuid: string;
@@ -93,6 +95,25 @@ function parseScheduleNote(text: string): { start: Date; end: Date } | null {
   return { start, end };
 }
 
+/**
+ * ISO 8601 with an explicit local UTC offset (e.g. "...-05:00"), matching the format
+ * HCP's own update_schedule request uses. Date.toISOString() always emits "Z"/UTC,
+ * which rolls the calendar date forward for any Central evening time — wrong for the
+ * start_date field HCP derives from this. Relies on the process running in
+ * America/Chicago (documented assumption for this poller).
+ */
+function toOffsetIso(date: Date): string {
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const offsetMin = -date.getTimezoneOffset();
+  const sign = offsetMin >= 0 ? '+' : '-';
+  const abs = Math.abs(offsetMin);
+  return (
+    `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}` +
+    `T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}` +
+    `${sign}${pad(Math.floor(abs / 60))}:${pad(abs % 60)}`
+  );
+}
+
 async function tick() {
   const all = readPending();
   let changed = false;
@@ -111,7 +132,12 @@ async function tick() {
         continue;
       }
 
-      const payload = buildSchedulePayload(parsed.start.toISOString(), parsed.end.toISOString(), PRO_UUIDS);
+      const payload = buildSchedulePayload(
+        String(booking.estimateId),
+        toOffsetIso(parsed.start),
+        toOffsetIso(parsed.end),
+        PRO_IDS
+      );
       await updateJobSchedule(String(booking.estimateId), payload);
       booking.status = 'scheduled';
       booking.scheduledStart = parsed.start.toISOString();
@@ -136,6 +162,6 @@ async function tick() {
   if (changed) writePending(all);
 }
 
-console.log(`[poller] Booking approval poller started — every ${INTERVAL_MS / 1000}s, pros: ${PRO_UUIDS.length}`);
+console.log(`[poller] Booking approval poller started — every ${INTERVAL_MS / 1000}s, pros: ${PRO_IDS.length}`);
 await tick();
 setInterval(() => { void tick(); }, INTERVAL_MS);
