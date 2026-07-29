@@ -16,3 +16,4 @@ export const addLineItem         = HCP_VIA_MCP ? mcp.addLineItem         : direc
 export const assignTechnician    = HCP_VIA_MCP ? mcp.assignTechnician    : direct.assignTechnician;
 export const setDeposit          = HCP_VIA_MCP ? mcp.setDeposit          : direct.setDeposit;
 export const createPriceBookItem = HCP_VIA_MCP ? mcp.createPriceBookItem : directCreatePriceBookItem;
+export const addCustomerAddress  = HCP_VIA_MCP ? mcp.addCustomerAddress  : direct.addCustomerAddress;
