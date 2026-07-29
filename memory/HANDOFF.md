@@ -1,6 +1,8 @@
 # Handoff — HCP Sync AIWA Relocation
 
-**Status as of 2026-07-28:** both jobs are relocated and live on AIWA. `sync-estimates` (jobs) runs
+**Status as of 2026-07-28 (night):** both jobs are relocated and live on AIWA, and both are now cut
+over to the CT102 MCP daemon for HCP auth (O2 steps 1–5 done; step 6 = watch the Sun 2026-08-02
+fire, then drop `HCP_COOKIES_FILE`). `sync-estimates` (jobs) runs
 Sundays 03:30; `hcp-catalog-sync` (price book, customers, estimates) runs Sundays 04:30 and has
 been verified by a manual run. **7 of the deploy key's uses are now gone.** The next agent's job is
 the *remaining* key consumers — see "Then: the remaining key consumers". Read "Start Here" and go.
@@ -44,10 +46,25 @@ to end, and the timer was enabled. Details below.
 Nothing is outstanding on `hcp-catalog-sync`. Move to the remaining key consumers in the table
 below — that is what still blocks retiring the key.
 
-The one thing to watch: **the first unattended run is Sun 2026-08-02 ~04:33 CDT.** It has never run
-on the timer, only by hand. Check `journalctl --identifier=hcp-catalog-sync` after it, per section
-9 of the runbook. The most likely failure is an expired HCP session (runbook section 11), since the
-cookie file is shared with the jobs job and nothing refreshes it automatically.
+The one thing to watch: **the first unattended run is Sun 2026-08-02 ~04:33 CDT** (estimates at
+~03:34). It has never run on the timer, only by hand. Check
+`journalctl --identifier=hcp-catalog-sync` after it, per section 9 of the runbook.
+
+**Both jobs now authenticate through the CT102 MCP daemon, not the cookie file** (O2 cutover,
+2026-07-28 — see `PLAN.md` Revisions and `JOURNAL.md`). That changes what to look for:
+
+- **Check that each unit reached `inactive (dead)`, not just that its output looked fine.** Both
+  are `Type=oneshot` with `TimeoutStartUSec=infinity`; a unit stuck in `activating` after a
+  *successful*-looking run is the signature of a leaked transport handle, and it silently blocks
+  every following weekly fire. This exact bug was found and fixed pre-flight (`d78e249`,
+  guarded by `src/hcp/mcp-close.check.ts`) — verify the symptom is gone, don't assume it.
+- An expired HCP session now surfaces as a daemon-side failure; the fix is `npm run relogin` on
+  the PC, which refreshes the browser profile the daemon uses. **No cookie file is copied to
+  AIWA.** `sync-catalog.ts` prints the correct instruction for whichever route was in use.
+- **Rollback is one line:** delete `HCP_VIA_MCP` from `/opt/hcp-catalog-sync/hcp-catalog-sync.env`
+  and `/opt/hcp-estimates-sync/hcp-estimates-sync.env` and the cookie path resumes unchanged.
+  `HCP_COOKIES_FILE` is deliberately still present in both for that reason; it comes out only
+  after one clean weekly fire (O2 step 6).
 
 ### Deployment result — 2026-07-28
 

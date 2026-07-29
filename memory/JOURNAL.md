@@ -4,6 +4,61 @@ Entries are append-only. History is never rewritten.
 
 ---
 
+## 2026-07-28 — AIWA cut over to the MCP daemon route (O2 steps 1, 2, 4, 5)
+
+The daemon cutover ran. Both AIWA weekly sync jobs now authenticate to HCP through the CT102
+daemon rather than a cookie file. Step 6 (watch one clean weekly fire, then drop
+`HCP_COOKIES_FILE`) is the only part left.
+
+- CT102 runs `housecall-pro-mcp` at tag `production-2026-07-28`; anonymous probe still 401.
+- Both env files carry `HCP_VIA_MCP=true`, `HCP_MCP_URL=http://192.168.1.14:7332/`, and the
+  shared `HCP_MCP_TOKEN`, at `600 root:root`. `HCP_COOKIES_FILE` retained as the rollback lever.
+- Both sync bundles rebuilt on aiwa-host from `d78e249` and deployed:
+  `sync-catalog.mjs` = `1e556986…` (656,719 B), `sync-estimates.mjs` = `8f34062f…` (645,338 B),
+  backups `.bak-20260729T025450Z`. No unit started, stopped, restarted, or reloaded.
+
+**The preflight caught a defect that would have silently killed the schedule.** First run of O2
+step 5 printed `HCP auth ok — authenticated via daemon` and then hung — exit 124 at the 60 s
+timeout. The `HCP_VIA_MCP=false` control printed the same success line and exited 0 in 0.53 s.
+The MCP SDK's StreamableHTTP transport holds a socket open in a module-level singleton, and every
+entry point here deliberately ends by returning and letting the event loop drain rather than
+calling `process.exit()` (a forced exit after `fetch` trips libuv's `UV_HANDLE_CLOSING` assertion
+on Windows and returns the NT status instead of the intended code). An unreleased transport means
+the loop never empties. Fixed in `d78e249`: `closeClient()` / `closeHcp()`, called on the success
+path of the preflight and both sync entry points.
+
+Generalizable findings:
+
+- **A success path that hangs is worse than a failure path that hangs.** Both units are
+  `Type=oneshot` with `TimeoutStartUSec=infinity` and `RuntimeMaxUSec=infinity`. A fully
+  successful run would have wedged the unit in `activating` indefinitely and blocked every
+  subsequent weekly fire — while writing a success line to the journal and never emitting
+  `HCP_AUTH_PREFLIGHT_FAIL`. The monitor greps for the failure marker, so it would have reported
+  nothing wrong for as long as it took someone to notice stale data. Infinite timeouts on a
+  oneshot convert a liveness bug into a silent permanent outage.
+- **"Prints the right answer" is not "exits."** The success line and the exit code are separate
+  observations. Every verification step here now asserts the exit code explicitly, under
+  `timeout`, because the output alone looked perfect in the broken case.
+- **A regression check that passes when you delete the fix is guarding nothing.** The first
+  version of `mcp-close.check.ts` passed both with and without `closeHcp()` — its stub daemon
+  answered 405 to the client's standalone `GET` stream and let idle keep-alive sockets time out,
+  so the child drained on its own either way. The check only became real once the stub held the
+  SSE stream open exactly as the daemon does (`keepAliveTimeout = headersTimeout =
+  requestTimeout = 0`, response never ended). **Always verify a regression check from both sides:
+  neuter the fix and confirm the check fails.** It now hangs and fails without the fix, in 10 s.
+- **Adding a check file can break a uniqueness check.** `preflight-auth.check.ts` asserts the
+  `HCP_AUTH_PREFLIGHT_FAIL` marker appears only in an allow-list of files; the new check asserts
+  the marker is *absent* on success and so had to join the list. Working as designed — worth
+  knowing the marker's allow-list is a real constraint on new test files.
+- **Cross-platform bundles are not reproducible.** The sync bundles are built on aiwa-host, not
+  the PC, because esbuild resolves a platform-specific binary; a Windows-built bundle and a
+  Linux-built one differ. Hashes are therefore only comparable within a host. Fixed separately in
+  `ce85d1c` (invoke esbuild by name so the build works on Linux at all).
+- **Fingerprints beat dry-runs for secret installs.** `LEN=${#t}` plus the first 8 hex of
+  `sha256sum` confirms *which* value landed in a file without disclosing it — a dry-run only
+  confirms the installer's intent, not the resulting bytes. This is what caught an earlier
+  wrong-blob install.
+
 ## 2026-07-28 — HCP_MCP_TOKEN provisioned to aiwa-host (O2 step 3)
 
 Executed Operator Session O2 step 3 and half of step 4 from `PLAN.md`. The daemon cutover itself

@@ -412,6 +412,36 @@ relogin decision before deleting the PC daemon.
 
 ## Revisions
 
+**2026-07-28 (night) — O2 steps 1, 2, 4, 5 done; step 5 caught a real defect first:**
+
+- **Done:** O2 step 1 (daemon `production-2026-07-28` live on CT102), step 2 (both sync bundles
+  rebuilt on aiwa-host and deployed), the remaining `HCP_VIA_MCP=true` half of step 4 (both env
+  files, `600 root:root`, `HCP_COOKIES_FILE` retained per the step), and step 5.
+- **Step 5 failed on the first attempt, and that is the whole reason it exists.** The preflight
+  printed `HCP auth ok — authenticated via daemon` and then hung until killed — exit 124 at 60 s.
+  Control run with `HCP_VIA_MCP=false`: same success line, exit 0 in 0.53 s. Root cause: the
+  StreamableHTTP client transport in `mcp-client.ts` holds a socket open in a module-level
+  singleton, and every entry point ends its success path by returning and letting the event loop
+  drain (never `process.exit()`, which trips libuv's `UV_HANDLE_CLOSING` assertion on Windows).
+  A transport left open means the loop never empties.
+- **Blast radius had this reached the timer:** both units are `Type=oneshot` with
+  `TimeoutStartUSec=infinity` and `RuntimeMaxUSec=infinity`. A fully *successful* run would have
+  wedged the unit in `activating` forever and blocked every following weekly fire — with a
+  success line in the journal and no `HCP_AUTH_PREFLIGHT_FAIL` for the monitor to catch. The
+  failure mode was silent by construction; only step 5's explicit exit-code check surfaced it.
+- **Fix:** commit `d78e249` — `closeClient()` in `mcp-client.ts`, `closeHcp()` in `client.ts`
+  (dynamic import, so the cookie path never pulls the MCP SDK into its module graph), called on
+  the success path of `preflight-cli.ts`, `sync-catalog.ts`, `sync-estimates.ts`. Guarded by
+  `src/hcp/mcp-close.check.ts`.
+- Redeployed from `d78e249`: `/opt/hcp-catalog-sync/sync-catalog.mjs` = `1e556986…` (656,719 B),
+  `/opt/hcp-estimates-sync/sync-estimates.mjs` = `8f34062f…` (645,338 B), both `644 root:root`,
+  backups `.bak-20260729T025450Z` hash-verified against the previous live pair before the copy.
+  No unit started, stopped, restarted, or reloaded. Step 5 re-run: exit 0 in 0.57 s.
+- **Remaining: step 6 only** — watch the Sun 2026-08-02 fire (estimates 03:34, catalog 04:33 CDT),
+  confirm both reach `inactive (dead)` rather than sticking in `activating`, then remove
+  `HCP_COOKIES_FILE` from both env files. Rollback lever until then: delete the `HCP_VIA_MCP` line
+  from both env files and the cookie path resumes unchanged.
+
 **2026-07-28 (evening) — O2 step 3 executed; step 4 deliberately split in two:**
 
 - **Done:** O2 step 3 (provision `HCP_MCP_TOKEN` to aiwa-host) and the `HCP_MCP_URL` +
