@@ -165,6 +165,24 @@ export async function updateJobSchedule(
   return callTool<unknown>("update_job_schedule", { request_id: requestId, schedule_data: scheduleData });
 }
 
+export async function addCustomerAddress(
+  customerId: string,
+  addr: { street: string; city: string; state: string; zip: string; latitude?: number; longitude?: number; streetLine2?: string }
+): Promise<string> {
+  const args: Record<string, unknown> = {
+    customer_id: customerId,
+    street: addr.street,
+    city: addr.city,
+    state: addr.state,
+    zip: addr.zip,
+  };
+  if (addr.latitude !== undefined) args.latitude = addr.latitude;
+  if (addr.longitude !== undefined) args.longitude = addr.longitude;
+  if (addr.streetLine2) args.street_line_2 = addr.streetLine2;
+  const { address } = await callTool<{ address: { id: string; printableAddress: string } }>("add_customer_address", args);
+  return address.id;
+}
+
 /**
  * Close the lazy singleton and release the transport's socket, so a process
  * that ends by draining the event loop can actually exit. Without this the

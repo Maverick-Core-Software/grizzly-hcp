@@ -331,6 +331,33 @@ export async function searchCustomer(name: string): Promise<HcpCustomer | null> 
 
 // ─── Customer creation ────────────────────────────────────────────────────────
 
+/** Resolve a cus_xxx UUID to the numeric HCP customer id. */
+export async function resolveNumericCustomerId(customerUuid: string): Promise<string> {
+  const res = await hcpGet<{ contact_info: { id: number } }>(`/api/v2/pro/customers/${customerUuid}`);
+  return String(res.contact_info.id);
+}
+
+/** Add a service address to an existing HCP customer (direct HTTP). Returns the new adr_xxx UUID. */
+export async function addCustomerAddress(
+  numericCustomerId: string,
+  addr: { street: string; city: string; state: string; zip: string; latitude?: number; longitude?: number; streetLine2?: string }
+): Promise<string> {
+  const body: Record<string, unknown> = {
+    street: addr.street,
+    city: addr.city,
+    state: addr.state,
+    zip: addr.zip,
+  };
+  if (addr.latitude !== undefined) body.lat = addr.latitude;
+  if (addr.longitude !== undefined) body.lng = addr.longitude;
+  if (addr.streetLine2) body.street_line_2 = addr.streetLine2;
+  const res = await hcpPost<{ uuid: string; printable_address: string }>(
+    `/api/v2/pro/customers/${numericCustomerId}/addresses`,
+    body
+  );
+  return res.uuid;
+}
+
 /** Create a new customer in HCP. Returns the created customer or throws on failure. */
 export async function createCustomer(opts: {
   name: string;
