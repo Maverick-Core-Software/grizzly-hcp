@@ -384,29 +384,41 @@ reaches `192.168.1.14:7332` (TCP + HTTP 401 bearer-gate confirmed).
 
 ---
 
-## Operator Session O1 — PC remnant cleanup and relogin enable
+## Operator Session O1 — PC remnant cleanup
 
 > **NOT dispatched to Qwen.** These are live-state operations on Carter's PC requiring his
 > explicit per-item consent and an elevated shell. Listed here so the plan is complete.
 > Run after Sessions 1–4 verify **AND after O2 has proven the daemon route on AIWA** — do
 > not remove the PC daemon until the AIWA sync jobs are confirmed running through CT102.
 
-**Sequencing matters:** the relogin script talks to a daemon on `127.0.0.1:7332`. Do the
-relogin decision before deleting the PC daemon.
+**Relogin is settled — no sequencing constraint.** Verified 2026-07-28 against
+`housecall-pro-mcp/deploy/MIGRATION.md`: CT102 refreshes its own session via
+`hcp-mcp-relogin.timer` (06:45 America/Chicago, `xvfb-run … npm run relogin`), and the
+Windows task `HCP Session Relogin` is already **disabled** by the cutover, annotated
+"was PC-profile only."
+
+The binding constraint was never the headed browser — it is the Chrome profile directory.
+`relogin.ts` refreshes `USER_DATA_DIR` = `~/.hcp-mcp-browser` (`src/client.ts:24`), the same
+directory the *local* daemon reads. CT102 has its own `/home/hcp-mcp/.hcp-mcp-browser`,
+"fresh CT-resident; nothing copied from Windows" (MIGRATION.md:21). A PC relogin therefore
+cannot refresh CT102's session, and retargeting `DAEMON_URL` alone would be worse than
+useless — it would tell CT102 to release its browser, then refresh the PC's dead profile.
+
+If CT102's automated OAuth ever fails, the interactive path is on the CT (MIGRATION.md:146):
+reinstall the noVNC stack, `/root/deploy/login-start.sh`, log in, `login-stop.sh`.
 
 1. **Confirm** CT102 `hcp-mcp.service` is serving and the PC's local 7332 listener is
    genuinely redundant for every remaining consumer.
-2. **Relogin stays on the PC** (Carter's decision). Its Chrome profile `~/.hcp-mcp-browser`
-   remains on the PC. Confirm what the refreshed profile must reach after the PC daemon is
-   removed, and adjust its target before, not after, the deletion.
-3. **Enable** the HCP relogin scheduled task. Requires Carter's consent.
-4. **Archive then remove** the confirmed remnants — `housecall-pro-mcp` and `mav-console`.
+2. **Leave the PC relogin task disabled.** The PC's `~/.hcp-mcp-browser` profile becomes
+   dead weight once the PC daemon is removed; delete it with the daemon, not before.
+3. **Archive then remove** the confirmed remnants — `housecall-pro-mcp` and `mav-console`.
    Move to `C:\Workspace\Archive\`, then `pm2 delete` via the elevated gsudo pattern
    followed by `pm2 save`. Requires Carter's consent per process.
    - Neither is in `CRITICAL_PM2_PROCESSES`, so Hermes will not alarm.
    - **Do not touch `homelab-agent-sensors`** — retained rollback backup.
-5. **Still unverified, check before acting:** `prometheus-sync`, `maverick-dashboard`,
-   `voice-server`, `booking-approval-poller`.
+4. **Check before acting:** `prometheus-sync`, `maverick-dashboard`, `voice-server`.
+   `booking-approval-poller` was verified 2026-07-28 as already talking to CT102
+   (`192.168.1.14:7332`) — effectively cut over, leave it running.
 
 ---
 

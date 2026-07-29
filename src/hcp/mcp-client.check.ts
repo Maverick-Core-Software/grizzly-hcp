@@ -4,8 +4,15 @@
  * Verifies the wrapper can reach the daemon and round-trip a read (search_customer).
  */
 import assert from "node:assert/strict";
-import { searchCustomer } from "./mcp-client.js";
+import { searchCustomer, closeClient } from "./mcp-client.js";
 
-const res = await searchCustomer("ZZ Definitely No Such Customer 9999");
-assert.ok(res === null || typeof res.id === "string", "searchCustomer returns null or a customer with an id");
-console.log("✓ mcp-client smoke check passed — daemon reachable, search_customer round-trips");
+try {
+  const res = await searchCustomer("ZZ Definitely No Such Customer 9999");
+  assert.ok(res === null || typeof res.id === "string", "searchCustomer returns null or a customer with an id");
+  console.log("✓ mcp-client smoke check passed — daemon reachable, search_customer round-trips");
+} finally {
+  // Without this the transport keeps its socket and the process hangs forever
+  // on success — the exact leak mcp-close.check.ts guards. Never process.exit()
+  // here: a forced exit after fetch trips libuv's UV_HANDLE_CLOSING on Windows.
+  await closeClient();
+}

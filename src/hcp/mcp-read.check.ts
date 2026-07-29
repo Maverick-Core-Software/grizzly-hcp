@@ -73,14 +73,18 @@ async function main(): Promise<void> {
       const tmpFile = resolve(repoRoot, ".tmp-mcp-test.ts");
       writeFileSync(
         tmpFile,
-        `import { apiGet } from "./src/hcp/mcp-client.js";
+        `import { apiGet, closeClient } from "./src/hcp/mcp-client.js";
 try {
   const r = await apiGet("/test");
   console.log("RESULT:" + JSON.stringify(r));
 } catch (e) {
   console.log("ERROR:" + (e instanceof Error ? e.message : String(e)));
-}
-setTimeout(() => process.exit(0), 500);`
+} finally {
+  // Release the transport and let the loop drain. The old setTimeout(process.exit)
+  // did neither reliably: on Windows a forced exit after fetch trips libuv's
+  // UV_HANDLE_CLOSING assert, and the child survived to hold a socket open.
+  await closeClient();
+}`
       );
 
       let output = "";
@@ -91,6 +95,9 @@ setTimeout(() => process.exit(0), 500);`
           {
             cwd: repoRoot,
             timeout: 10000,
+            // SIGTERM is advisory on Windows — a wedged child ignores it and
+            // execFileSync blocks on the pipe, hanging this process too.
+            killSignal: "SIGKILL",
             env: { ...process.env, HCP_MCP_TOKEN: mcpToken },
             stdio: ["pipe", "pipe", "pipe"],
           }
