@@ -153,6 +153,13 @@ export async function apiGet<T>(path: string): Promise<T> {
   return callTool<T>("hcp_api_get", { path });
 }
 
+/** Narrow v2 customer read used by SMS address intake to obtain HCP's numeric id. */
+export async function getCustomerV2(customerUuid: string): Promise<{ contact_info?: { id?: number | string }; id?: number | string }> {
+  return apiGet<{ contact_info?: { id?: number | string }; id?: number | string }>(
+    `/api/v2/pro/customers/${encodeURIComponent(customerUuid)}`,
+  );
+}
+
 /**
  * Schedule a job/request. requestId is the NUMERIC estimate/request id as a string
  * (HcpEstimate.estimateId), NOT the est_... uuid. scheduleData comes from

@@ -24,7 +24,10 @@ import { matchLineItems, loadPriceBook, normalize } from '../../rag/price-book.j
 import { buildLineItem, itemKind } from '../../hcp/build-line-item.js';
 import { applyHdAutoPricing } from './hd-auto-price.js';
 import { commitEstimateWorkflow } from '../../agent/workflows/private-hcp-writes/commit-estimate.js';
-import type { CommitLineItem } from '../../agent/workflows/private-hcp-writes/commit-estimate.js';
+import type { CommitEstimateInput, CommitLineItem } from '../../agent/workflows/private-hcp-writes/commit-estimate.js';
+import { parseSmsEstimateReady, type SmsEstimateIntake, type SmsIntakeReviewReason } from '../../server/sms-intake.js';
+import { createSmsHcpAdapter } from '../../hcp/sms-hcp-adapter.js';
+import { resolveSmsCustomerAndAddress, type SmsCustomerResolutionAdapters } from '../../hcp/sms-customer-resolution.js';
 
 function progress(msg: string) {
   process.stderr.write(`[progress] ${msg}\n`);
@@ -112,18 +115,91 @@ async function extractServiceItems(scope: string): Promise<Array<{ description: 
 
 const DRY_RUN = process.argv.includes('--dry-run');
 
-async function run() {
-  const payload = JSON.parse(await readStdin()) as {
-    scope?: string;
-    lineItems?: Array<{ name: string; quantity: number; unitPrice: number; type: string; serviceItemId?: string }>;
-    newPricebookItems?: Array<{ name: string; description: string; category?: string; unitPrice: number; quantity: number; saveToBook: boolean }>;
-    customerName?: string;
-    customerEmail?: string;
-    customerPhone?: string;
-    techIds?: string[];
-    depositPercent?: number;
-    operationId?: string;
+export interface FromChatPayload {
+  scope?: string;
+  lineItems?: Array<{ name: string; quantity: number; unitPrice: number; type: string; serviceItemId?: string }>;
+  newPricebookItems?: Array<{ name: string; description: string; category?: string; unitPrice: number; quantity: number; saveToBook: boolean }>;
+  customerName?: string;
+  customerEmail?: string;
+  customerPhone?: string;
+  /** Present only for the validated customer SMS path. */
+  customerAddress?: string;
+  /** Optional intake metadata; S5 records it in a post-success estimate note. */
+  leadSource?: string;
+  siteWalk?: boolean;
+  techIds?: string[];
+  depositPercent?: number;
+  operationId?: string;
+}
+
+export type SmsRunnerDecision =
+  | { kind: 'legacy' }
+  | { kind: 'needs_review'; reviewReason: SmsIntakeReviewReason | string }
+  | {
+    kind: 'resolved';
+    intake: SmsEstimateIntake;
+    customerId: string;
+    addressId: string;
+    normalizedAddress: string;
   };
+
+/**
+ * SMS is identified by its explicit service address, never by a name or phone
+ * alone.  Legacy callers intentionally bypass this entire path unchanged.
+ */
+export async function decideSmsEstimateIntake(
+  payload: FromChatPayload,
+  adapters: SmsCustomerResolutionAdapters = createSmsHcpAdapter(),
+): Promise<SmsRunnerDecision> {
+  if (!payload.customerAddress) return { kind: 'legacy' };
+
+  const { operationId, ...estimateReady } = payload;
+  const parsed = parseSmsEstimateReady(estimateReady, {
+    // The webhook validates this same value against its signed From field before
+    // spawning the runner.  Revalidating here prevents direct runner callers
+    // from bypassing the shared schema.
+    trustedInboundPhone: payload.customerPhone ?? '',
+    operationId: operationId ?? '',
+  });
+  if (parsed.kind === 'review') return { kind: 'needs_review', reviewReason: parsed.reason };
+
+  const resolution = await resolveSmsCustomerAndAddress(parsed.intake, adapters);
+  if (resolution.kind === 'needs_review') {
+    return { kind: 'needs_review', reviewReason: resolution.reason };
+  }
+  return {
+    kind: 'resolved',
+    intake: parsed.intake,
+    customerId: resolution.customerId,
+    addressId: resolution.addressId,
+    normalizedAddress: resolution.normalizedAddress.normalizedAddress,
+  };
+}
+
+/** Pure seam used by the offline check and the real SMS commit call. */
+export function buildResolvedSmsCommitInput(input: {
+  decision: Extract<SmsRunnerDecision, { kind: 'resolved' }>;
+  lineItems: CommitLineItem[];
+  newPricebookItems?: CommitEstimateInput['newPricebookItems'];
+  techIds: string[];
+  depositPercent?: number;
+}): CommitEstimateInput {
+  return {
+    operationId: input.decision.intake.operationId,
+    customer: {
+      id: input.decision.customerId,
+      addressId: input.decision.addressId,
+      name: input.decision.intake.customerName,
+    },
+    lineItems: input.lineItems,
+    newPricebookItems: input.newPricebookItems,
+    techIds: input.techIds,
+    depositPercent: input.depositPercent,
+  };
+}
+
+async function run() {
+  const payload = JSON.parse(await readStdin()) as FromChatPayload;
 
   const {
     scope,
@@ -142,6 +218,19 @@ async function run() {
     return;
   }
 
+  // Dry runs keep their historical no-customer-resolution behavior.  In a real
+  // run, an SMS-shaped payload must resolve to verified IDs before any estimate
+  // path (including a default/placeholder address) is considered.
+  const smsDecision = DRY_RUN ? { kind: 'legacy' as const } : await decideSmsEstimateIntake(payload);
+  if (smsDecision.kind === 'needs_review') {
+    process.stdout.write(JSON.stringify({
+      success: false,
+      reviewReason: smsDecision.reviewReason,
+      error: 'SMS intake needs review before an estimate can be created.',
+    }));
+    return;
+  }
+
   // Tech IDs: use provided list, or fall back to Carter + Jaime
   const techIds: string[] = incomingTechIds?.length
     ? incomingTechIds
@@ -155,6 +244,10 @@ async function run() {
   if (DRY_RUN) {
     customerId = 'dry-run';
     addressId  = 'dry-run';
+  } else if (smsDecision.kind === 'resolved') {
+    customerId = smsDecision.customerId;
+    addressId = smsDecision.addressId;
+    progress('Verified SMS customer and service address.');
   } else if (customerName) {
     progress(`Searching for customer: ${customerName}...`);
     let found = await searchCustomer(customerName);
@@ -315,14 +408,23 @@ async function run() {
     }));
 
   progress('Creating estimate in HCP...');
-  const result = await commitEstimateWorkflow({
-    operationId,
-    customer: { id: customerId, addressId, name: customerName || 'Unknown Customer' },
-    lineItems: commitLineItems,
-    newPricebookItems: newPricebookCommit.length ? newPricebookCommit : undefined,
-    techIds,
-    depositPercent,
-  });
+  const commitInput = smsDecision.kind === 'resolved'
+    ? buildResolvedSmsCommitInput({
+      decision: smsDecision,
+      lineItems: commitLineItems,
+      newPricebookItems: newPricebookCommit.length ? newPricebookCommit : undefined,
+      techIds,
+      depositPercent,
+    })
+    : {
+      operationId,
+      customer: { id: customerId, addressId, name: customerName || 'Unknown Customer' },
+      lineItems: commitLineItems,
+      newPricebookItems: newPricebookCommit.length ? newPricebookCommit : undefined,
+      techIds,
+      depositPercent,
+    } satisfies CommitEstimateInput;
+  const result = await commitEstimateWorkflow(commitInput);
 
   if (!result.success) {
     if (result.manualRecovery) progress(`Recovery: ${result.manualRecovery}`);
@@ -357,9 +459,17 @@ async function run() {
     estimateUrl: result.estimateUrl,
     estimateUuid: result.estimateUuid,
     unmatched: result.unmatched,
+    ...(smsDecision.kind === 'resolved' ? {
+      smsIntake: {
+        normalizedAddress: smsDecision.normalizedAddress,
+        ...(smsDecision.intake.leadSource ? { leadSource: smsDecision.intake.leadSource } : {}),
+      },
+    } : {}),
   }));
 }
 
-run().catch(err => {
-  process.stdout.write(JSON.stringify({ success: false, error: err.message }));
-});
+if (process.argv[1]?.replace(/\\/g, '/').endsWith('/from-chat.ts')) {
+  run().catch(err => {
+    process.stdout.write(JSON.stringify({ success: false, error: err.message }));
+  });
+}
