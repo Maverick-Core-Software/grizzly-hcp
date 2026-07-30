@@ -469,8 +469,9 @@ cut over.
 - Relevant commits, catalog-sync phase: `b355d3e` (sync-catalog entry point + bundle), `af901b0`
   (mav-rag snapshot), `b8a209c` (ingest estimate type), `f57812a` (deploy artifacts, PC publish
   scripts retired), `2ebbb46` (catalog runbook)
-- Brain vault commit: `f9b80d9` in `C:\Workspace\Active\brain`
-- `git status` is clean as of 2026-07-28, including untracked files.
+- Brain vault commit: `e5aafd9` in `C:\Workspace\Active\brain`
+- `git status` is clean as of 2026-07-29, apart from `.serena/project.yml` and `.pi-subagents/`,
+  which belong to another agent and were deliberately left untouched.
 
 ## Loose Ends (non-urgent, unrelated to the mission)
 
