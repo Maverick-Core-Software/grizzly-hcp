@@ -58,7 +58,7 @@ restarted on 2026-07-29 to pick it up, as was `booking-approval-poller` for its 
 
 ---
 
-## Customer SMS Path — reviewed, not changed (2026-07-29)
+## Customer SMS Path — pre-build review (2026-07-29)
 
 After the voice fixes landed, the customer SMS path was read to see whether it carried the same
 bugs. **It does not, and no code was changed.** This section is a review record and a list of
@@ -130,6 +130,82 @@ be indistinguishable to the SMS path.
 `spawn('tsx', ...)`, depending on `tsx` being on `PATH`. `voice-server` uses the
 `process.execPath` form instead. Aligning them removes a PATH-dependent failure mode; it is not
 currently breaking anything.
+
+---
+
+## Customer SMS intake integration — code-ready, not deployed (2026-07-29)
+
+The reviewed SMS gaps are now implemented in five local commits on `voice-booking-capture`:
+
+- `e1480e0` — validated SMS estimate-intake contract and offline checks.
+- `83bb344` — persona emits structured service address and optional referral source only after
+  the price-range opt-in.
+- `dad47a2` — safe customer/service-address resolution with explicit review outcomes.
+- `b6160ab` — `from-chat` commits only from a resolved SMS intake.
+- `95ca9e7` — durable inbound-event deduplication, deterministic local runner, and truthful
+  delivery copy.
+
+### Preserved funnel and intake safety
+
+The price-shopper zero-write gate remains deliberate and covered by the customer-chat offline
+check: a decline after a quoted range runs no estimate pipeline and creates no customer or
+estimate. SMS still does not auto-schedule an appointment.
+
+After opt-in, `[ESTIMATE_READY]` carries the structured service address; email and referral source
+are optional. The runner geocodes the address, reuses an equivalent address for the resolved
+customer, and only adds an address after an authoritative address-list read confirms it is absent.
+Customer candidates require corroboration by normalized phone, supplied email, or an existing
+matching address. Geocode failure, an address-list failure, missing adapter capability, or an
+ambiguous candidate returns a review state and does not create/send an estimate.
+
+Direct and MCP adapter paths are explicit. The offline resolver check covers an MCP-capable
+resolution path and verifies that missing MCP capability fails closed to review rather than
+silently routing a write elsewhere.
+
+### Durable webhook behavior and customer language
+
+The signed webhook claims `MessageSid` before agent or runner work. The ignored local SQLite
+event store is `data/sms-inbound-events.sqlite`; it keeps only event identity, derived operation
+identity, timestamps, status, and safe review category—never raw SMS body or customer PII. The
+same deterministic operation identity reaches the estimate workflow, so serial, concurrent, and
+restart replays of one event do not start another agent, pipeline, estimate, or final reply.
+
+The runner now invokes the project-local `tsx` CLI through the current Node executable with no
+shell, avoiding a `PATH` dependency. Success copy says the estimate was sent through the actual
+available delivery channel, asks for approval, and says appointment time will be confirmed; it
+does not claim the customer is booked.
+
+### Local evidence
+
+All focused offline checks passed on 2026-07-29:
+
+```powershell
+npx tsx src/server/sms-intake.check.ts
+npx tsx src/hcp/sms-customer-resolution.check.ts
+npx tsx src/automations/estimates/from-chat.check.ts
+npx tsx src/server/customer-chat-server.check.ts
+npx tsx src/hcp/geocode.check.ts
+npx tsx src/agent/workflows/private-hcp-writes/commit-estimate.check.ts
+npx tsx src/agent/tools/reads/voice-lookup.check.ts
+git diff --check
+```
+
+`npm exec tsc -- --noEmit` remains an observed unrelated global baseline, not a passing gate:
+four existing diagnostics were reported in `from-proposal.ts` and `mine-pricebook-candidates.ts`;
+none are on the SMS path.
+
+### External approval gate — do not imply these are complete
+
+No PM2 restart, Twilio delivery, HCP write, deployment, or live customer test occurred for this
+SMS integration. Before any live enablement:
+
+1. Confirm the PC Node runtime supports `node:sqlite`.
+2. Obtain explicit approval to restart/reload `customer-chat-server` in PM2.
+3. Verify the process and `/health` after that approved restart.
+4. With a designated non-customer controlled test number and explicit write approval, first send
+   a price-decline message and prove the no-write path; separately approve a safe ready-state test.
+5. Verify one `MessageSid` yields exactly one durable event, one operation, one pipeline, one
+   estimate, and one reply.
 
 ---
 

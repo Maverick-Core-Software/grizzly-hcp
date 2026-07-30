@@ -409,4 +409,40 @@ collapses to `addresses.data[0]`, and `from-chat.ts` has no `needs_address_revie
 warn on it the way the voice path does.
 
 Full detail and the recommended shape of each fix are in `memory/HANDOFF.md` under
-"Customer SMS Path — reviewed, not changed (2026-07-29)".
+"Customer SMS Path — pre-build review (2026-07-29)".
+
+---
+
+## 2026-07-29 — customer SMS intake integration code-ready; live gate pending
+
+Implemented the previously reviewed SMS intake work in five local commits: `e1480e0`, `83bb344`,
+`dad47a2`, `b6160ab`, and `95ca9e7`. The price-shopper funnel was preserved: declining after the
+quoted range starts no estimate pipeline and produces no HCP customer or estimate write. SMS still
+does not schedule appointments automatically.
+
+The structured ready payload now keeps the service address and optional referral source. The
+estimate runner validates the intake, geocodes and safely resolves the address, reuses equivalent
+addresses, and requires a corroborated customer candidate. Invalid/unresolved addresses,
+ambiguous customer identity, failed address reads, and unavailable adapter capability produce a
+review state with no estimate send. Direct and complete MCP adapter paths are covered offline;
+incomplete MCP capability fails closed instead of bypassing the configured mode.
+
+The webhook now claims `MessageSid` before background work and persists only safe event metadata
+in ignored `data/sms-inbound-events.sqlite`: event/operation identity, timestamps, status, and
+review category. It stores no raw SMS body or customer PII. Serial, concurrent, and restart replay
+checks prove one event cannot create a second agent operation, pipeline, estimate, or reply. The
+runner uses local Node plus the project `tsx` CLI without a shell. Customer copy now truthfully says
+the estimate was sent through the available channel and that appointment time will be confirmed
+after approval; it does not say the customer is booked.
+
+Focused offline checks passed: SMS-intake, SMS customer/address resolution, `from-chat`,
+customer-chat server, geocoding, estimate-commit, voice lookup, and `git diff --check`. The global
+TypeScript command is only an observed unrelated baseline, not a pass: it reported four existing
+diagnostics in `from-proposal.ts` and `mine-pricebook-candidates.ts`, none on the SMS path.
+
+No PM2 restart, Twilio delivery, HCP write, deployment, or live customer test occurred. The exact
+external gates are: confirm the PC runtime supports `node:sqlite`; obtain explicit approval to
+restart `customer-chat-server` under PM2; verify process health and `/health`; use a controlled
+non-customer number to test the decline/no-write path first and, only under separately approved
+write authority, a safe-ready path; then prove one `MessageSid` maps to one durable event, one
+operation, one pipeline, one estimate, and one reply.
