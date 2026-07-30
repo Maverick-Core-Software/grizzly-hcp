@@ -5,6 +5,8 @@ data/*.csv
 data/*.json
 !data/employee-phones.json  # keep the employee allowlist in version control
 data/*.jsonl
+data/*.sqlite
+data/*.sqlite-*
 test-fixtures/
 auth/
 proposals/
