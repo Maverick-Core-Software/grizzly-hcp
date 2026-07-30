@@ -58,6 +58,81 @@ restarted on 2026-07-29 to pick it up, as was `booking-approval-poller` for its 
 
 ---
 
+## Customer SMS Path — reviewed, not changed (2026-07-29)
+
+After the voice fixes landed, the customer SMS path was read to see whether it carried the same
+bugs. **It does not, and no code was changed.** This section is a review record and a list of
+open decisions — nothing here is a defect report against a shipped behavior.
+
+### The quick-text funnel is deliberate, and the code implements it
+
+Carter's design intent is that the texting number is a lightweight funnel for price shoppers, so
+it must not burn HCP writes on someone who is only asking what a job costs. That is what the code
+does. In `src/agent/resolver.ts`, steps 1–5 of the customer SMS flow are **zero-write**:
+
+- Step 4 (`resolver.ts:245-248`) quotes a pricebook **range** from `search_pricebook` /
+  `lookup_pricing`. No HCP object is created.
+- Step 5 (`resolver.ts:250-253`) is the gate: *"Does that range work for you? Want to get on the
+  schedule?"* A "no" ends the conversation with a friendly sign-off.
+- Only past that gate do steps 6–7 collect fields and emit `[ESTIMATE_READY]`
+  (`resolver.ts:263-266`), and `resolver.ts:286` forbids emitting it early.
+
+So a price shopper costs a pricebook lookup and nothing else. **Do not "fix" this by making SMS
+create estimates earlier — the gate is the feature.**
+
+### Why SMS is structurally immune to all three voice bugs
+
+Not "happens to be unaffected" — the code paths do not exist:
+
+- **Numeric-vs-UUID pro ids:** SMS never schedules. It never calls `update_job_schedule`, so it
+  never touches `CARTER_PRO_ID` / `JAIME_PRO_ID`.
+- **Timezone offset:** no schedule times are ever constructed, so `toOffsetIso()` is not in play.
+- **Duplicate addresses:** `from-chat.ts` never calls `addCustomerAddress()`. It cannot create a
+  duplicate address because it never creates an address at all.
+
+### Open decision 1 — the service address is collected and then dropped
+
+`resolver.ts:258` asks *"What's the service address?"*, but there is nowhere for it to go:
+
+- The SMS `[ESTIMATE_READY]` block (`resolver.ts:266`) has **no address field** — unlike the
+  voice block, whose scope instruction explicitly says "with address".
+- `from-chat.ts` accepts only `{ scope, lineItems, customerName, customerEmail, customerPhone,
+  depositPercent }` (`from-chat.ts:117-124`). `address` appears nowhere in the file; only
+  `addressId`, taken from a found/created customer or a placeholder. The limitation is already
+  flagged in a `ponytail:` comment at `customer-chat-server.ts:309`.
+
+It is **recoverable, not lost**: `customer-chat-server.ts:327-331` attaches the full SMS
+transcript to the estimate as a note via `updateEstimateNotes()`, so the address the customer
+typed is readable in HCP — just not in the estimate's address field.
+
+If this gets closed, the shape is: add `customerAddress` to the SMS block, geocode it in
+`from-chat.ts`, and **reuse `findCustomerAddress()` from `src/hcp/estimates.ts`** so SMS cannot
+reintroduce the duplicate-address bug the voice path just fixed.
+
+### Open decision 2 — "how'd you hear about us" has the same fate
+
+`resolver.ts:260` asks it as the fourth required field, and `resolver.ts:286` refuses to emit
+without it, but the block carries no field for it either. Same root cause as the address, same
+transcript-note recovery. Worth deciding whether it should be captured structurally or dropped
+from the required four.
+
+### Open decision 3 — ambiguous customer matching is silent here
+
+`searchCustomer()` (`src/hcp/estimates.ts:294`) takes `customers[0]` from a 10-result search and
+collapses to `addresses.data[0]`. First-match-wins. The voice path surfaces uncertainty via
+`needs_address_review` (`from-voice.ts:264`); `from-chat.ts` has no equivalent warning — verified,
+there is no ambiguity or review flag anywhere in that file. Two customers named "Madison" would
+be indistinguishable to the SMS path.
+
+### Nit worth folding into unrelated work
+
+`customer-chat-server.ts:105` and `src/automations/slack/index.ts:33` spawn the pipeline as
+`spawn('tsx', ...)`, depending on `tsx` being on `PATH`. `voice-server` uses the
+`process.execPath` form instead. Aligning them removes a PATH-dependent failure mode; it is not
+currently breaking anything.
+
+---
+
 ## Start Here
 
 ### The mission behind all of this

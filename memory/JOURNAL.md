@@ -370,3 +370,43 @@ restarted on 2026-07-29 to pick it up, as was `booking-approval-poller` for its 
 Relevant commits on `voice-booking-capture`: `8a30855` / `efb0886` (contact data written to HCP),
 `d9e1b6f` (persona capture rules), `bb34f01` (schedule payload captured; pro-id and timezone
 bugs fixed), `a1e13f5` (existing service address reused instead of duplicated).
+
+---
+
+## 2026-07-29 — customer SMS path reviewed; no code changed
+
+With the voice fixes deployed, the customer SMS path was read to see whether it carried the same
+three bugs. It does not. **No source file was changed** — this entry records a review and three
+open decisions.
+
+The initial read was wrong and worth recording as a lesson. Before checking the persona flow I
+told Carter the SMS path creates and sends a full HCP estimate for anyone who reaches
+`[ESTIMATE_READY]`, which framed his design intent as having drifted from the code. Reading
+`resolver.ts:245-266` disproved it: step 5 asks "Does that range work for you? Want to get on the
+schedule?" and a "no" ends the conversation. Steps 1–5 perform zero HCP writes. The price-shopper
+gate Carter described was already implemented exactly as he intended. **The lesson: confirm where
+a flow gates before characterizing what it spends.** A pricebook range quote is not an estimate.
+
+SMS cannot carry the three voice bugs because the code paths are absent, not merely unused:
+
+- It never schedules, so `update_job_schedule` and the numeric `CARTER_PRO_ID` / `JAIME_PRO_ID`
+  distinction never apply.
+- It constructs no schedule times, so the `toOffsetIso()` timezone trap is not reachable.
+- `from-chat.ts` never calls `addCustomerAddress()` — it creates no address at all, so it cannot
+  create a duplicate one.
+
+The real gap: the persona asks for the service address at `resolver.ts:258`, but the SMS
+`[ESTIMATE_READY]` block has no address field and `from-chat.ts` accepts none — its input is
+`{ scope, lineItems, customerName, customerEmail, customerPhone, depositPercent }` and the word
+`address` appears in the file only as `addressId`. So the address is collected and dropped from
+the estimate record. It survives in the transcript note that `customer-chat-server.ts:327-331`
+attaches to the estimate, so it is recoverable by hand. "How'd you hear about us"
+(`resolver.ts:260`) has the same fate for the same reason. Both were left as decisions for
+Carter rather than patched, since closing them changes what the funnel writes to HCP.
+
+Also noted, not changed: `searchCustomer()` is first-match-wins on a 10-result search and
+collapses to `addresses.data[0]`, and `from-chat.ts` has no `needs_address_review` equivalent to
+warn on it the way the voice path does.
+
+Full detail and the recommended shape of each fix are in `memory/HANDOFF.md` under
+"Customer SMS Path — reviewed, not changed (2026-07-29)".
