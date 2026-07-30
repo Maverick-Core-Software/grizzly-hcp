@@ -317,3 +317,56 @@ Findings worth keeping:
   operator can confirm the rollback took. Required env on the AIWA sync host to enable the
   daemon path: `HCP_VIA_MCP=true`, `HCP_MCP_URL`, `HCP_MCP_TOKEN` (names only — values live in
   the env file, never in any tracked file).
+
+---
+
+## 2026-07-29 — voice booking captures real contact data
+
+The voice booking path now captures and writes real contact data end to end, and was verified
+unattended through the approval poller on a test customer — the first time that path has run
+without a human in the loop.
+
+What the path does now (`from-voice.ts`):
+
+- Geocodes the spoken street + city through the US Census geocoder. Zip is completed by the
+  system and never asked of the caller.
+- Resolves or creates the customer, attaches a service address, creates the estimate against
+  that address, posts a `MAVERICK BOOKING REQUEST` note, and assigns Carter + Jaime so HCP
+  pushes them a notification.
+
+Persona capture rules (`src/agent/resolver.ts`):
+
+- A callback number and a street + city are required before `[BOOKING_REQUEST]` may be emitted.
+- Email is one best-effort ask; an empty string is acceptable.
+- If the caller refuses phone or address, the persona falls back to the message flow instead of
+  booking.
+
+Bugs found and fixed:
+
+- **`update_job_schedule` requires numeric pro ids** — `CARTER_PRO_ID=722501`,
+  `JAIME_PRO_ID=723719`, now in `.env` — not the `pro_xxx` UUIDs that `assignTechnician` uses
+  for dispatch. Confusing the two was why scheduling silently failed.
+- **Schedule times must carry an explicit local UTC offset.** `toOffsetIso()` in
+  `approval-poller.ts` emits it. `Date.toISOString()` cannot be used here: it always emits `Z`,
+  so any Central evening appointment rolled the calendar date forward a full day in the
+  `start_date` HCP derives from it.
+- **Repeat callers were accumulating duplicate address records.** `findCustomerAddress()` in
+  `src/hcp/estimates.ts` now matches an existing address on house number + 5-digit zip + unit.
+  Exact string matching does not work: the Census geocoder normalizes what the caller said
+  ("15221 Berry Trail" → "15221 BERRY TRL"), so the same house yields two different strings. A
+  failed lookup falls through to creating an address rather than blocking the booking.
+
+Manual edge: status `needs_address_review` is written when geocoding fails. The approval poller
+ignores it — it only acts on status `pending`. An operator must fix the address in HCP by hand
+and then schedule it manually; nothing retries automatically.
+
+Operator Session O1 complete: the real `update_schedule` body was captured live and written
+into `data/schedule-payload-template.json`; the `_UNCAPTURED` sentinel is gone.
+
+Deployment is PM2 on CartersPC, not AIWA. `from-voice.ts` needs no restart — `voice-server`
+spawns it fresh per call. The persona is an in-process import, so `voice-server` **was**
+restarted on 2026-07-29 to pick it up, as was `booking-approval-poller` for its fix.
+
+Relevant commits on `voice-booking-capture`: `8a30855` / `efb0886` (contact data written to HCP),
+`d9e1b6f` (persona capture rules), `bb34f01` (schedule payload captured; pro-id and timezone
+bugs fixed), `a1e13f5` (existing service address reused instead of duplicated).
