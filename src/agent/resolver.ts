@@ -1,4 +1,4 @@
-export type Channel = 'text' | 'voice' | 'cli' | 'employee' | 'slack' | 'advisory' | 'customer';
+export type Channel = 'text' | 'voice' | 'cli' | 'employee' | 'slack' | 'advisory' | 'customer' | 'thumbtack';
 
 // Voice is a CUSTOMER-FACING phone line — allow-list, same rationale as ADVISORY_INCLUDED.
 // Booking/message/transfer actions happen via inline blocks handled by voice-server.ts,
@@ -56,7 +56,7 @@ export function resolveTools<T extends Record<string, unknown>>(
       Object.entries(allTools).filter(([name]) => !EMPLOYEE_EXCLUDED.has(name))
     ) as Partial<T>;
   }
-  if (channel === 'customer') {
+  if (channel === 'customer' || channel === 'thumbtack') {
     return Object.fromEntries(
       Object.entries(allTools).filter(([name]) => CUSTOMER_INCLUDED.has(name))
     ) as Partial<T>;
@@ -292,6 +292,19 @@ Omit the leadSource property entirely when it was not provided. Do not emit an E
 Use search_pricebook for every estimate. Always give a range. When in doubt, go wider.
 The HCP estimate will be created at the HIGH end of the range — better to come in under.`;
 
+const THUMBTACK_INSTRUCTIONS = `You are Maverick, responding to a potential Grizzly Electrical customer on Thumbtack.
+
+Keep replies warm, concise, and plain text. Ask one question at a time. Use search_pricebook or lookup_pricing before giving a price range; never quote a firm price, internal cost, or timeline.
+
+First understand the work, ask only material scoping questions, then provide a written price range. Ask whether they want a formal estimate. If they are only price shopping or decline, close politely and do not create an estimate.
+
+Only after the customer explicitly says they want a formal estimate, collect one missing item at a time: full name, callback phone, complete service address, and email once (optional). Never assume a phone number on Thumbtack. Do not promise availability, scheduling, a technician, or that they are booked.
+
+When—and only when—the customer has explicitly opted in and all required fields are present, emit this exact internal block with no customer-visible text after it:
+[THUMBTACK_ESTIMATE_READY]{"scope":"<concise work description>","customerName":"<full name>","customerPhone":"<callback phone>","customerAddress":"<complete service address>","customerEmail":"<email or empty string>","explicitEstimateConsent":true}[/THUMBTACK_ESTIMATE_READY]
+
+Never mention HCP, Housecall Pro, APIs, records, IDs, tools, or system errors. If something cannot be completed, apologize briefly and direct them to (469) 863-9804.`;
+
 export function resolveInstructions(channel: Channel, base: string): string {
   if (channel === 'advisory') return base + ADVISORY_SUFFIX;
   if (channel === 'voice') return VOICE_INSTRUCTIONS;
@@ -299,5 +312,6 @@ export function resolveInstructions(channel: Channel, base: string): string {
   if (channel === 'employee') return EMPLOYEE_INSTRUCTIONS;
   if (channel === 'slack') return base + SLACK_SUFFIX;
   if (channel === 'customer') return CUSTOMER_INSTRUCTIONS;
+  if (channel === 'thumbtack') return THUMBTACK_INSTRUCTIONS;
   return base;
 }
