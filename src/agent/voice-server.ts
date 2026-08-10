@@ -34,6 +34,7 @@ import { WebSocketServer, WebSocket } from 'ws';
 import { createMaverickAgent } from './index.js';
 import { logAudit } from './audit-log.js';
 import { officeStatus } from './office-hours.js';
+import { sendOpsAlert } from '../ops/alert.js';
 import { randomUUID } from 'crypto';
 
 const PORT = Number(process.env.VOICE_PORT ?? 8765);
@@ -133,9 +134,34 @@ function spawnPipeline(payload: Record<string, unknown>): void {
     ['node_modules/tsx/dist/cli.mjs', 'src/automations/bookings/from-voice.ts'],
     { cwd: process.cwd(), stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true }
   );
+  let stderrTail = '';
   child.stdout.on('data', (d) => console.log(`[voice-pipeline] ${String(d).trim()}`));
-  child.stderr.on('data', (d) => console.error(`[voice-pipeline:err] ${String(d).trim()}`));
-  child.on('exit', (code) => console.log(`[voice-pipeline] exited ${code}`));
+  child.stderr.on('data', (d) => {
+    const line = String(d).trim();
+    console.error(`[voice-pipeline:err] ${line}`);
+    stderrTail = (stderrTail + '\n' + line).slice(-1500);
+  });
+  child.on('exit', (code) => {
+    console.log(`[voice-pipeline] exited ${code}`);
+    // A non-zero exit means the caller's booking/message landed in
+    // pending-bookings.jsonl as failed_needs_manual (or worse, crashed before
+    // the catch). Push an alert so it never sits silent again.
+    if (code !== 0) {
+      const p = (payload.payload ?? {}) as Record<string, unknown>;
+      const who = String(p.customerName ?? p.callerName ?? 'Unknown Caller');
+      const phone = String(p.callbackPhone ?? payload.callerPhone ?? 'unknown');
+      void sendOpsAlert(
+        `Maverick ${String(payload.kind ?? 'call')} FAILED — ${who}`,
+        [
+          `Caller: ${who}  Callback: ${phone}`,
+          `Issue: ${String(p.issue ?? p.message ?? 'n/a')}`,
+          `Exit code: ${code}`,
+          `Handle manually — check data/pending-bookings.jsonl.`,
+          stderrTail ? `--- stderr tail ---${stderrTail}` : '',
+        ].filter(Boolean).join('\n')
+      );
+    }
+  });
   child.stdin.write(JSON.stringify(payload));
   child.stdin.end();
 }

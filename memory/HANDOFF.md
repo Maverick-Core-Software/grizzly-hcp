@@ -636,3 +636,32 @@ cut over.
   the cleaned history — until then, do not push it anywhere.
 - `/opt/mav-rag` on AIWA is not a git repository. Putting it under version control would remove the
   need for the snapshot-file arrangement in `deploy/mav-rag/`.
+
+---
+
+## 2026-08-10 — Voice-booking 401 outage: hardening (post-incident step 4)
+
+Root cause (Jul 31–Aug 8 silent outage): direct-client cookies from the Jul 16 manual login expired
+~Jul 31; every voice booking/message failed `HCP 401 on POST /alpha/customers` and sat unalerted in
+`data/pending-bookings.jsonl` as `failed_needs_manual`. `HCP_VIA_MCP=true` (set Jul 29) never took
+effect because voice-server's PM2 env snapshot predated it. Fixed same day: fresh `npm run login`,
+`pm2 restart voice-server booking-approval-poller --update-env`. Carter is contacting the missed
+customers personally — do NOT reprocess the failed records.
+
+Hardening now in place:
+1. **Failure alerts** — `src/ops/alert.ts` (ntfy, topic NTFY_TOPIC / OPS_NTFY_TOPIC override);
+   voice-server `spawnPipeline` pushes an urgent alert with caller details + stderr tail whenever a
+   from-voice run exits non-zero. Note: ntfy Title header is ByteString — no emoji (sanitized).
+2. **Cookie watchdog** — `scripts/check-hcp-cookies.ts`, run daily 09:00 by Scheduled Task
+   `Grizzly_HCPCookieCheck` (headless). Health = `_housecall-web_session_with_domain` expiry
+   (~14-day life) + csrf presence; alerts at ≤3 days. Do NOT judge by min expiry across all cookies
+   (`__stripe_sid` lives 30 min).
+3. **Automated relogin** — Scheduled Task `Grizzly_HCPRelogin`, Mondays 08:00, interactive session
+   only (headed 2-click Google OAuth via persistent profile, `scripts/hcp-relogin.ts`). Dry-fired
+   2026-08-10: 19 cookies incl. csrf. If it fails (no session), the watchdog alert is the backstop.
+   The old disabled "HCP Session Relogin" task points at the wrong repo; superseded.
+4. **updateEstimateNotes via MCP** — gateway.ts now routes it MCP-first with automatic direct-client
+   fallback on `-32602 Tool not found` (verified against live CT102). The daemon-side
+   `update_estimate_notes` tool is parked in `artifacts/update-estimate-notes-tool.patch` (not
+   applied — Carter has WIP in housecall-pro-mcp); apply + production tag + approved CT102 deploy,
+   then the fallback stops firing on its own.

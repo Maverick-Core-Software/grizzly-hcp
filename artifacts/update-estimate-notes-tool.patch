@@ -1,0 +1,26 @@
+Add to housecall-pro-mcp src/tools/writes.ts, inside registerWriteTools()
+after the update_invoice tool (typechecked + 75/75 tests passed on 2026-08-10
+before being parked to avoid colliding with in-progress work in the repo):
+
+  // ─── UPDATE ESTIMATE NOTES ─────────────────────────────────
+  server.tool(
+    "update_estimate_notes",
+    "Replace the private notes body on an existing estimate. Uses POST /api/estimates/{estimate_uuid}/notes — the same call the grizzly-hcp direct client makes (voice/chat booking-request notes). Pass the estimate request UUID and the full note text; the content replaces the current note body.",
+    {
+      estimate_id: z.string().describe("Estimate request UUID (from create_estimate)"),
+      content: z.string().describe("Full note text; replaces the existing note body"),
+    },
+    async ({ estimate_id, content }) => {
+      await client.post(`/api/estimates/${estimate_id}/notes`, {
+        estimate_uuid: estimate_id,
+        content,
+        expand: ["updated_by"],
+      });
+      return {
+        content: [{
+          type: "text" as const,
+          text: JSON.stringify({ success: true, estimateId: estimate_id }, null, 2),
+        }],
+      };
+    }
+  );

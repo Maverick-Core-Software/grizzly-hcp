@@ -12,13 +12,14 @@
  *              status "pending") ignores it — the office moves the job in HCP manually.
  *
  * Writes go through gateway.ts (direct client or MCP daemon per HCP_VIA_MCP), matching
- * the from-chat.ts estimate pipeline. updateEstimateNotes is direct-client only.
+ * the from-chat.ts estimate pipeline. updateEstimateNotes routes MCP-first with a
+ * direct-client fallback until the daemon ships the tool (see gateway.ts).
  */
 import 'dotenv/config';
 import fs from 'fs';
 import path from 'path';
-import { searchCustomer, createCustomer, assignTechnician, createEstimate, addCustomerAddress } from '../../hcp/gateway.js';
-import { updateEstimateNotes, resolveNumericCustomerId, findCustomerAddress } from '../../hcp/estimates.js';
+import { searchCustomer, createCustomer, assignTechnician, createEstimate, addCustomerAddress, updateEstimateNotes } from '../../hcp/gateway.js';
+import { resolveNumericCustomerId, findCustomerAddress } from '../../hcp/estimates.js';
 import { resolveAddress } from '../../hcp/geocode.js';
 import type { ResolvedAddress } from '../../hcp/geocode.js';
 

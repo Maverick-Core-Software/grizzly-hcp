@@ -140,6 +140,11 @@ export async function listEmployees(): Promise<{ count: number; employees: Array
   return callTool<{ count: number; employees: Array<Record<string, unknown>> }>("list_employees", {});
 }
 
+/** Replace the notes body on an estimate. Requires a daemon release that ships update_estimate_notes. */
+export async function updateEstimateNotes(estimateUuid: string, notes: string): Promise<void> {
+  await callTool<unknown>("update_estimate_notes", { estimate_id: estimateUuid, content: notes });
+}
+
 /** Raw HCP notes response for an estimate/job. Shape is not guaranteed — parse defensively. */
 export async function getJobNotes(estimateUuid: string): Promise<unknown> {
   return callTool<unknown>("get_job_notes", { estimate_id: estimateUuid });
