@@ -3,8 +3,9 @@
  *   { kind: "booking" | "message" | "reschedule", payload: {...}, callerPhone, callSid }
  *
  * booking    → geocode address → find/create customer → write address on customer
- *              → create estimate against that address → booking-request note
- *              → assign Carter + Jaime (notify_pro push) → append data/pending-bookings.jsonl
+ *              → create estimate against that address → attach line items (Service Fee + issue)
+ *              → booking-request note → assign Carter + Jaime (notify_pro push)
+ *              → append data/pending-bookings.jsonl
  *              (the approval-poller then watches that estimate's notes for a SCHEDULE reply)
  * message    → same customer/estimate/note/assign chain, but marked delivered immediately.
  * reschedule → same chain as booking; the note carries the HCP job id + new preferred windows.
@@ -22,6 +23,8 @@ import { searchCustomer, createCustomer, assignTechnician, createEstimate, addCu
 import { resolveNumericCustomerId, findCustomerAddress } from '../../hcp/estimates.js';
 import { resolveAddress } from '../../hcp/geocode.js';
 import type { ResolvedAddress } from '../../hcp/geocode.js';
+import { attachBookingLineItems } from './booking-line-items.js';
+import { sendOpsAlert } from '../../ops/alert.js';
 
 interface BookingPayload {
   customerName?: string;
@@ -241,6 +244,23 @@ try {
   const estimate = await createEstimate(customer.id, addressId);
   console.log(`[from-voice] Created estimate ${estimate.uuid} (#${estimate.estimateId})`);
 
+  // 4b. Booking estimates must carry line items (empty shells are useless in HCP).
+  //     Reschedule shells stay note-only — office moves the existing job.
+  if (input.kind === 'booking') {
+    try {
+      const lines = await attachBookingLineItems(estimate.uuid, p.issue ?? '');
+      console.log(`[from-voice] Line items: ${lines.join(' | ')}`);
+    } catch (e) {
+      // Do not fail the whole booking if pricing match/MCP line write fails —
+      // customer + note + schedule path still matter; flag in logs for manual fix.
+      console.error(
+        `[from-voice] WARNING: line items failed (estimate still created): ${
+          e instanceof Error ? e.message : e
+        }`,
+      );
+    }
+  }
+
   // 5. Post the note with address/email/callback on their own lines
   await updateEstimateNotes(estimate.uuid, buildNote(input.kind, now, {
     resolvedAddress,
@@ -285,6 +305,18 @@ try {
   });
 
   console.log(JSON.stringify({ success: true, estimateUuid: estimate.uuid, estimateId: estimate.estimateId }));
+  await sendOpsAlert(
+    `Maverick ${input.kind} — ${name}`,
+    [
+      `Callback: ${phone || 'unknown'}`,
+      `Address: ${pendingAddress || 'n/a'}`,
+      `Issue: ${p.issue ?? p.message ?? 'n/a'}`,
+      `Estimate #${estimate.estimateId}`,
+      `https://pro.housecallpro.com/app/estimates/${estimate.uuid}`,
+      status === 'needs_address_review' ? 'ADDRESS UNVERIFIED — office must fix' : 'Add a SCHEDULE note to approve.',
+    ].join('\n'),
+    { priority: 'high', tags: 'telephone_receiver' },
+  );
   process.exit(0);
 } catch (e) {
   // Never lose a caller: persist the failure so it can be handled manually.

@@ -649,9 +649,11 @@ effect because voice-server's PM2 env snapshot predated it. Fixed same day: fres
 customers personally — do NOT reprocess the failed records.
 
 Hardening now in place:
-1. **Failure alerts** — `src/ops/alert.ts` (ntfy, topic NTFY_TOPIC / OPS_NTFY_TOPIC override);
-   voice-server `spawnPipeline` pushes an urgent alert with caller details + stderr tail whenever a
-   from-voice run exits non-zero. Note: ntfy Title header is ByteString — no emoji (sanitized).
+1. **Failure + booking alerts** — `src/ops/alert.ts` fans out to ntfy **and** Twilio SMS on
+   Carter's hermes-pc-sms thread (`OPS_SMS_FROM` → `OPS_SMS_TO`; never the customer Twilio
+   number). `from-voice` texts on successful booking/message/reschedule (estimate # + HCP
+   link). `voice-server` still texts on non-zero exit (stderr tail). `customer-chat-server`
+   texts on estimate create/fail. ntfy Title header is ByteString — no emoji (sanitized).
 2. **Cookie watchdog** — `scripts/check-hcp-cookies.ts`, run daily 09:00 by Scheduled Task
    `Grizzly_HCPCookieCheck` (headless). Health = `_housecall-web_session_with_domain` expiry
    (~14-day life) + csrf presence; alerts at ≤3 days. Do NOT judge by min expiry across all cookies

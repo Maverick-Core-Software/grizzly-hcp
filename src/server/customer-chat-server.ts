@@ -27,6 +27,7 @@ import {
   type SmsSender,
 } from './sms-intake.js';
 import { SqliteSmsInboundEventStore } from './sms-inbound-event-store.js';
+import { sendOpsAlert } from '../ops/alert.js';
 
 const { validateRequest } = twilio;
 const PORT = Number(process.env.CUSTOMER_CHAT_PORT ?? 3012);
@@ -151,6 +152,8 @@ export interface CustomerSmsOrchestratorDependencies {
   sessions: CustomerSmsSessionStore;
   sendEstimateDelivery(input: { estimateUuid: string; phone: string; email?: string; customerName?: string }): Promise<void>;
   updateNotes?(estimateUuid: string, note: string): Promise<void>;
+  /** Optional so offline checks do not fire live ntfy/Twilio. */
+  notify?: typeof sendOpsAlert;
 }
 
 export interface CustomerSmsInboundMessage {
@@ -257,6 +260,18 @@ export function createCustomerSmsOrchestrator(deps: CustomerSmsOrchestratorDepen
         const isReview = Boolean(estimate.reviewReason);
         await send(input.fromPhone, isReview ? ADDRESS_REPAIR_MESSAGE : ESTIMATE_FOLLOW_UP_MESSAGE);
         await mark(input.messageSid, isReview ? 'review' : 'failed', estimate.reviewReason);
+        if (!isReview && deps.notify) {
+          await deps.notify(
+            `Customer SMS estimate FAILED — ${intake.customerName}`,
+            [
+              `Phone: ${input.fromPhone}`,
+              `Address: ${intake.customerAddress}`,
+              `Scope: ${intake.scope}`,
+              `Reason: ${estimate.reviewReason ?? 'pipeline_failed'}`,
+            ].join('\n'),
+            { priority: 'urgent', tags: 'speech_balloon' },
+          );
+        }
         return;
       }
 
@@ -286,6 +301,19 @@ export function createCustomerSmsOrchestrator(deps: CustomerSmsOrchestratorDepen
       await send(input.fromPhone, completion);
       await mark(input.messageSid, 'completed');
       console.log('[customer] Estimate created and delivered.');
+      if (deps.notify) {
+        await deps.notify(
+          `Customer SMS estimate — ${intake.customerName}`,
+          [
+            `Phone: ${input.fromPhone}`,
+            `Address: ${intake.customerAddress}`,
+            `Scope: ${intake.scope}`,
+            `Estimate: ${estimate.estimateUuid}`,
+            `https://pro.housecallpro.com/app/estimates/${estimate.estimateUuid}`,
+          ].join('\n'),
+          { priority: 'high', tags: 'speech_balloon' },
+        );
+      }
     },
   };
 }
@@ -414,6 +442,7 @@ const customer = createCustomerSmsOrchestrator({
   sessions: { get: getSession },
   sendEstimateDelivery: input => sendEstimate(input.estimateUuid, { phone: input.phone, email: input.email, customerName: input.customerName }),
   updateNotes: updateEstimateNotes,
+  notify: sendOpsAlert,
 });
 const webhook = createCustomerChatWebhook({
   validateSignature: ({ signature, params }) => validateRequest(TWILIO_AUTH_TOKEN, signature, `${PUBLIC_URL}/webhook/twilio`, params),
