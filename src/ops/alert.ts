@@ -40,9 +40,11 @@ export function resolveOpsSmsConfig(env: NodeJS.ProcessEnv = process.env): {
 } | null {
   const accountSid = env.OPS_TWILIO_ACCOUNT_SID || env.TWILIO_ACCOUNT_SID || '';
   const authToken = env.OPS_TWILIO_AUTH_TOKEN || env.TWILIO_AUTH_TOKEN || '';
+  const customerFrom = env.TWILIO_PHONE_NUMBER || '';
   const from = env.OPS_SMS_FROM || '';
   const to = env.OPS_SMS_TO || '';
-  if (!accountSid || !authToken || !from || !to) return null;
+  // Alerts must come from the hermes-pc-sms number, never the customer line.
+  if (!accountSid || !authToken || !from || !to || from === customerFrom) return null;
   return { accountSid, authToken, from, to };
 }
 

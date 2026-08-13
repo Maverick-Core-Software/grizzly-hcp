@@ -32,6 +32,17 @@ import { formatOpsSms, OPS_SMS_MAX_CHARS, resolveOpsSmsConfig, sendOpsSms } from
 }
 
 {
+  const cfg = resolveOpsSmsConfig({
+    TWILIO_ACCOUNT_SID: 'ACtest',
+    TWILIO_AUTH_TOKEN: 'secret',
+    TWILIO_PHONE_NUMBER: '+15559990000',
+    OPS_SMS_FROM: '+15559990000',
+    OPS_SMS_TO: '+15553334444',
+  });
+  assert.equal(cfg, null, 'OPS_SMS_FROM matching the customer line is rejected');
+}
+
+{
   const text = formatOpsSms('Maverick booking — Jane', 'Callback: +1555\nIssue: outlet');
   assert.match(text, /Maverick booking/);
   assert.match(text, /outlet/);
