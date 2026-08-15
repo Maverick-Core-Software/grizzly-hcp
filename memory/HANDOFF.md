@@ -9,26 +9,80 @@ the *remaining* key consumers — see "Then: the remaining key consumers". Read 
 
 ---
 
-## Voice Booking Path — current state (2026-07-29)
+## Voice / ops booking — current truth (2026-08-15)
 
-A separate workstream from the AIWA relocation. The voice booking path now captures and writes
-real contact data end to end, and was verified unattended through the approval poller on a test
-customer — the first time that path has run without a human in the loop.
+**Live on CartersPC PM2** (not AIWA): `voice-server` (:8765), `booking-approval-poller`.
+**Repo tip:** `1731019` on `main` (`Maverick-Core-Software/grizzly-hcp`).
 
-What the path now does (`from-voice.ts`):
+### Booking create (`from-voice.ts`)
 
-- Geocodes the spoken street + city through the US Census geocoder. Zip is completed by the
+- **Required:** name + valid phone + **geocoded** address (house # + street + city). No
+  empty-address estimate; geocode failure → `failed_needs_manual` (not a half-written customer).
+- **Geocode:** US Census; street/city **title-cased** before HCP write (not ALL CAPS).
+- **Customer create:** sets `mobile_number` + normalized 10-digit phone (and `phone_number`).
+  Real email when provided; else `no-email+{digits}@grizzlyelectrical.net`.
+- **Assign:** Carter + Jaime (`CARTER_PRO_UUID` / `JAIME_PRO_UUID`, `notify_pro: true`).
+- **Line items** (`booking-line-items.ts`):
+  - Troubleshooting → **Service Fee** + **Troubleshoot Level 1** (single circuit/appliance) or
+    **Level 2** (multiple / whole-home). No free-text pricebook guess for pure diagnostics.
+  - Non-troubleshoot → Service Fee + issue match as before.
+  - Price objection (`priceConcern` or issue text) → **50% Service Fee discount** line.
+  - Prices come from pricebook (Level 1 $189; Level 2 currently $319 in `data/pricebook.csv`).
+- **Ops alert** (ntfy + ops SMS): includes  
+  `Reply: SCHEDULE <estimateId> MM/DD h:mm am - h:mm pm`
+
+### Persona (`resolver.ts`)
+
+- Address: house number + street + city required; do **not** ask for zip/state (system completes).
+- Email: best-effort; assemble spoken "name at gmail dot com"; empty if declined.
+- Optional `leadSource`; optional `priceConcern` on price/fee complaints.
+- Issue text should say single vs multiple systems when troubleshooting.
+
+### Schedule approval (`booking-approval-poller`)
+
+Two paths (every `BOOKING_POLL_INTERVAL_MS`, default 60s), `status=pending` only:
+
+1. **HCP note** on the estimate: `SCHEDULE MM/DD h:mm am - h:mm pm`
+2. **Ops SMS reply** (inbound to `OPS_SMS_FROM` from `OPS_SMS_TO` via Twilio REST):  
+   `SCHEDULE <estimateId> MM/DD h:mm am - h:mm pm`  
+   (or without id if exactly one pending booking)
+
+Then: `update_job_schedule` (numeric `CARTER_PRO_ID` / `JAIME_PRO_ID`), mark `scheduled`,
+confirmation estimate note, ops SMS `✅ Scheduled #…`. Processed SMS SIDs in
+`data/ops-sms-schedule-seen.json`.
+
+**Env:** `OPS_SMS_FROM` / `OPS_SMS_TO` / Twilio ops SID+token — never use customer
+`TWILIO_PHONE_NUMBER` as From. Schedule times use local-offset ISO (not `Date.toISOString()` Z).
+
+### Related MCP
+
+`housecall-pro-mcp` `4ed5723`: `create_customer` body writes `mobile_number` (same phone bug).
+
+---
+
+## Voice Booking Path — historical (2026-07-29)
+
+A separate workstream from the AIWA relocation. The voice booking path captured and wrote
+real contact data end to end, verified unattended through the approval poller on a test
+customer — the first time that path ran without a human in the loop.
+
+What the path did then (`from-voice.ts`):
+
+- Geocoded the spoken street + city through the US Census geocoder. Zip completed by the
   system and never asked of the caller.
-- Resolves or creates the customer, attaches a service address, creates the estimate against
-  that address, posts a `MAVERICK BOOKING REQUEST` note, and assigns Carter + Jaime so HCP
-  pushes them a notification.
+- Resolved or created the customer, attached a service address, created the estimate against
+  that address, posted a `MAVERICK BOOKING REQUEST` note, and assigned Carter + Jaime so HCP
+  pushed them a notification.
 
-Persona capture rules (`src/agent/resolver.ts`):
+Persona capture rules at that time (`src/agent/resolver.ts`):
 
-- A callback number and a street + city are required before `[BOOKING_REQUEST]` may be emitted.
+- A callback number and a street + city were required before `[BOOKING_REQUEST]` may be emitted.
 - Email is one best-effort ask; an empty string is acceptable.
 - If the caller refuses phone or address, the persona falls back to the message flow instead
   of booking.
+
+**Superseded 2026-08-15:** see **Voice / ops booking — current truth** above (house number
+required, mobile_number, title-case address, troubleshoot lines, ops-SMS schedule approval).
 
 Bugs found and fixed this phase:
 

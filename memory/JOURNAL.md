@@ -446,3 +446,31 @@ restart `customer-chat-server` under PM2; verify process health and `/health`; u
 non-customer number to test the decline/no-write path first and, only under separately approved
 write authority, a safe-ready path; then prove one `MessageSid` maps to one durable event, one
 operation, one pipeline, one estimate, and one reply.
+
+---
+
+## 2026-08-15 — Voice contact integrity, troubleshoot lines, ops-SMS schedule approve
+
+**Commits (main, pushed):**
+- `2318901` — house number required for booking address intake
+- `caca4c0` — contact fields (mobile_number), title-case geocode, troubleshoot L1/L2 + fee discount
+- `1731019` — schedule approval via ops SMS reply
+- MCP `4ed5723` — create_customer mobile_number body
+
+**Why:**
+- Voice bookings sometimes created customers with "No phone listed" (`phone_number` only).
+- Census addresses stored ALL CAPS.
+- Street-only spoken addresses became `needs_address_review` half-records.
+- Troubleshooting estimates free-text matched the issue instead of catalog Troubleshoot L1/L2.
+- Ops booking SMS was notify-only; schedule still required an HCP SCHEDULE note.
+
+**Live apply (CartersPC PM2, elevated):**
+- `voice-server` restarted for persona
+- `booking-approval-poller` restarted — log: `HCP notes + ops SMS`
+
+**Operator:** reply to ops booking text with
+`SCHEDULE <estimateId> MM/DD h:mm am - h:mm pm` (or HCP note `SCHEDULE …`).
+
+**Inspect smoke:** Kathy Anderson recreate `cus_7b8cb08c33a14a64ae03080751e588ef` /
+estimate `#502552175` — phone + email + title-case address verified by Carter.
+
