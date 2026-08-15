@@ -17,6 +17,8 @@ if (full) {
   assert.ok(full.street.length > 0, "[NETWORK] street should be non-empty");
   assert.ok(typeof full.latitude === "number" && typeof full.longitude === "number",
     "[NETWORK] lat/lng should be numbers");
+  // Census returns ALL CAPS raw; we title-case before returning.
+  assert.notEqual(full.street, full.street.toUpperCase(), "[NETWORK] street should not be ALL CAPS");
 }
 
 // 2. [NETWORK] Street+city input with no zip still resolves to a state and zip.
@@ -25,6 +27,17 @@ assert.ok(partial !== null, "[NETWORK] street+city should resolve");
 if (partial) {
   assert.equal(partial.state, "TX", "[NETWORK] state should be TX");
   assert.ok(/^\d{5}$/.test(partial.zip ?? ""), "[NETWORK] zip should be 5-digit even when not supplied");
+  assert.notEqual(partial.city, partial.city.toUpperCase(), "[NETWORK] city should not be ALL CAPS");
+}
+
+// 2b. [NETWORK] Kathy-style Ovilla address title-cases street/city (not ALL CAPS).
+const ovilla = await resolveAddress("703 Buckboard St, Ovilla, TX");
+assert.ok(ovilla !== null, "[NETWORK] Ovilla address should resolve");
+if (ovilla) {
+  assert.match(ovilla.street, /Buckboard/i, "[NETWORK] street should include Buckboard");
+  assert.notEqual(ovilla.street, ovilla.street.toUpperCase(), "[NETWORK] street should not be ALL CAPS");
+  assert.equal(ovilla.city, "Ovilla", "[NETWORK] city Ovilla title-cased");
+  assert.equal(ovilla.state, "TX");
 }
 
 // 3. [NETWORK] Nonsense input returns null.

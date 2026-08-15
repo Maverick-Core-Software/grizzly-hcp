@@ -23,7 +23,8 @@ import { searchCustomer, createCustomer, assignTechnician, createEstimate, addCu
 import { resolveNumericCustomerId, findCustomerAddress } from '../../hcp/estimates.js';
 import { resolveAddress } from '../../hcp/geocode.js';
 import type { ResolvedAddress } from '../../hcp/geocode.js';
-import { attachBookingLineItems } from './booking-line-items.js';
+import { formatDisplayAddress, normalizeUsPhone } from '../../hcp/contact-normalize.js';
+import { attachBookingLineItems, hasPriceConcern } from './booking-line-items.js';
 import { sendOpsAlert } from '../../ops/alert.js';
 
 interface BookingPayload {
@@ -31,6 +32,13 @@ interface BookingPayload {
   callbackPhone?: string;
   address?: string;
   email?: string;
+  /** Optional — preferred when the caller shared how they found us. */
+  leadSource?: string;
+  /**
+   * True when the caller objected to price/service fee on the call.
+   * Triggers 50% Service Fee discount on the booking estimate.
+   */
+  priceConcern?: boolean;
   issue?: string;
   preferredWindows?: string[];
   // message kind:
@@ -64,10 +72,13 @@ async function readStdin(): Promise<string> {
 const input = JSON.parse(await readStdin()) as PipelineInput;
 const p = input.payload ?? {};
 const name = (p.customerName ?? p.callerName ?? 'Unknown Caller').trim();
-const phone = (p.callbackPhone ?? input.callerPhone ?? '').trim();
-const digits = phone.replace(/\D/g, '') || 'unknown';
+const rawPhone = (p.callbackPhone ?? input.callerPhone ?? '').trim();
+const phone = normalizeUsPhone(rawPhone) ?? rawPhone.replace(/\D/g, '');
+const digits = phone || 'unknown';
 const callerEmail = (p.email ?? '').trim();
+// Real email when provided; placeholder only when they declined/skipped.
 const email = callerEmail || `no-email+${digits}@grizzlyelectrical.net`;
+const leadSource = (p.leadSource ?? '').trim();
 
 const proUuids = [process.env.CARTER_PRO_UUID, process.env.JAIME_PRO_UUID].filter(
   (u): u is string => Boolean(u)
@@ -102,9 +113,10 @@ function buildNote(
   }
 
   const addressLine = opts?.resolvedAddress
-    ? `${opts.resolvedAddress.street}, ${opts.resolvedAddress.city}, ${opts.resolvedAddress.state} ${opts.resolvedAddress.zip}`
+    ? formatDisplayAddress(opts.resolvedAddress)
     : (opts?.rawAddress ?? 'not given');
   const emailLine = opts?.callerEmail ? `Email: ${opts.callerEmail}` : 'Email: NOT PROVIDED';
+  const leadLine = leadSource ? `Lead source: ${leadSource}` : null;
 
   if (kind === 'booking') {
     lines.push(
@@ -114,6 +126,7 @@ function buildNote(
       `Callback: ${phone || 'unknown'}`,
       `Address: ${addressLine}`,
       emailLine,
+      ...(leadLine ? [leadLine] : []),
       `Issue: ${p.issue ?? 'not given'}`,
       `Preferred times: ${(p.preferredWindows ?? []).join('  |  ') || 'not given'}`,
       '',
@@ -129,6 +142,7 @@ function buildNote(
       `Callback: ${phone || 'unknown'}`,
       `Address: ${addressLine}`,
       emailLine,
+      ...(leadLine ? [leadLine] : []),
       `HCP job: ${p.jobId || 'unknown'}`,
       `Currently scheduled: ${p.currentTime || 'unknown'}`,
       `New preferred times: ${(p.preferredWindows ?? []).join('  |  ') || 'not given'}`,
@@ -154,8 +168,12 @@ try {
   if (input.kind === 'message') {
     let customer = await searchCustomer(name);
     if (!customer) {
-      customer = await createCustomer({ name, email, phone });
-      console.log(`[from-voice] Created customer ${customer.id}`);
+      customer = await createCustomer({
+        name,
+        email,
+        phone: normalizeUsPhone(phone) ?? phone,
+      });
+      console.log(`[from-voice] Created customer ${customer.id} phone=${normalizeUsPhone(phone) ?? 'MISSING'}`);
     } else {
       console.log(`[from-voice] Matched existing customer ${customer.id}`);
     }
@@ -194,18 +212,43 @@ try {
 
   // ── booking / reschedule — new flow ──
 
+  // Hard gate for booking: name + phone + geocodable address are non-negotiable.
+  // Reschedule may proceed without a new address (existing job already has one).
+  if (input.kind === 'booking') {
+    if (!name || name === 'Unknown Caller') {
+      throw new Error('Booking requires a customer name');
+    }
+    if (!normalizeUsPhone(phone)) {
+      throw new Error('Booking requires a valid callback phone');
+    }
+    if (!p.address?.trim()) {
+      throw new Error('Booking requires a service address (house number, street, city)');
+    }
+  }
+
   // 1. Geocode the spoken address (network call, may return null)
   let resolvedAddress: ResolvedAddress | null = null;
   if (p.address) {
     resolvedAddress = await resolveAddress(p.address);
   }
+  if (input.kind === 'booking' && !resolvedAddress) {
+    // Do not create a customer/estimate with a blank or unverified address.
+    throw new Error(
+      `Booking address could not be verified: "${p.address}". Need house number + street + city that geocodes.`,
+    );
+  }
 
-  // 2. Find or create the customer
+  // 2. Find or create the customer (always pass normalized phone + real/placeholder email)
   let customer = await searchCustomer(name);
   let existingCustomer = false;
   if (!customer) {
-    customer = await createCustomer({ name, email, phone });
-    console.log(`[from-voice] Created customer ${customer.id}`);
+    if (!normalizeUsPhone(phone) && input.kind === 'booking') {
+      throw new Error('Booking createCustomer requires a valid phone');
+    }
+    customer = await createCustomer({ name, email, phone: normalizeUsPhone(phone) ?? phone });
+    console.log(
+      `[from-voice] Created customer ${customer.id} phone=${normalizeUsPhone(phone) ?? 'MISSING'} email=${callerEmail ? 'provided' : 'placeholder'}`,
+    );
   } else {
     existingCustomer = true;
     console.log(`[from-voice] Matched existing customer ${customer.id}`);
@@ -213,7 +256,7 @@ try {
 
   // 3. Resolve the address on the customer: reuse the matching one if they already have it
   //    (repeat callers must not accumulate duplicate address records), otherwise add it.
-  //    Falls back to the old addressId on geocode failure.
+  //    Booking already hard-failed above if geocode returned null.
   let addressId: string;
   if (resolvedAddress) {
     const existingId = await findCustomerAddress(customer.id, {
@@ -236,11 +279,16 @@ try {
       console.log(`[from-voice] Added new service address ${addressId}`);
     }
   } else {
+    // Reschedule only — booking cannot reach here without resolvedAddress.
     addressId = customer.addressId ?? '';
-    console.log(`[from-voice] Geocode failed — using fallback addressId "${addressId}"`);
+    console.log(`[from-voice] Geocode failed — using fallback addressId "${addressId}" (reschedule path)`);
   }
 
-  // 4. Create the estimate against the address id (resolved or fallback)
+  if (!addressId) {
+    throw new Error('Cannot create estimate without a service address id');
+  }
+
+  // 4. Create the estimate against the address id
   const estimate = await createEstimate(customer.id, addressId);
   console.log(`[from-voice] Created estimate ${estimate.uuid} (#${estimate.estimateId})`);
 
@@ -248,7 +296,9 @@ try {
   //     Reschedule shells stay note-only — office moves the existing job.
   if (input.kind === 'booking') {
     try {
-      const lines = await attachBookingLineItems(estimate.uuid, p.issue ?? '');
+      const lines = await attachBookingLineItems(estimate.uuid, p.issue ?? '', {
+        priceConcern: hasPriceConcern(p.issue, p.priceConcern === true),
+      });
       console.log(`[from-voice] Line items: ${lines.join(' | ')}`);
     } catch (e) {
       // Do not fail the whole booking if pricing match/MCP line write fails —
@@ -278,14 +328,13 @@ try {
   }
 
   // 7. Track for the approval poller (booking) or the record (reschedule).
-  //    Status depends on whether the address resolved; needs_address_review is
-  //    ignored by the approval poller (it only acts on "pending").
+  //    Booking always has a resolved address now; reschedule may still review.
   const status = resolvedAddress
     ? (input.kind === 'reschedule' ? 'reschedule_pending' : 'pending')
     : 'needs_address_review';
 
   const pendingAddress = resolvedAddress
-    ? `${resolvedAddress.street}, ${resolvedAddress.city}, ${resolvedAddress.state} ${resolvedAddress.zip}`
+    ? formatDisplayAddress(resolvedAddress)
     : (p.address ?? '');
 
   appendPending({
@@ -295,6 +344,8 @@ try {
     customerName: name,
     callbackPhone: phone,
     address: pendingAddress,
+    email: callerEmail || '',
+    ...(leadSource ? { leadSource } : {}),
     issue: p.issue ?? p.message ?? '',
     jobId: p.jobId ?? '',
     currentTime: p.currentTime ?? '',
@@ -304,12 +355,20 @@ try {
     callSid: input.callSid ?? '',
   });
 
-  console.log(JSON.stringify({ success: true, estimateUuid: estimate.uuid, estimateId: estimate.estimateId }));
+  console.log(JSON.stringify({
+    success: true,
+    estimateUuid: estimate.uuid,
+    estimateId: estimate.estimateId,
+    phone: normalizeUsPhone(phone) ?? null,
+    emailProvided: Boolean(callerEmail),
+  }));
   await sendOpsAlert(
     `Maverick ${input.kind} — ${name}`,
     [
       `Callback: ${phone || 'unknown'}`,
       `Address: ${pendingAddress || 'n/a'}`,
+      `Email: ${callerEmail || 'NOT PROVIDED'}`,
+      ...(leadSource ? [`Lead source: ${leadSource}`] : []),
       `Issue: ${p.issue ?? p.message ?? 'n/a'}`,
       `Estimate #${estimate.estimateId}`,
       `https://pro.housecallpro.com/app/estimates/${estimate.uuid}`,

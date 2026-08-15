@@ -2,7 +2,12 @@
  * US Census Bureau geocoder — free, no API key, US-only.
  * Turns a spoken street-and-city string into structured address fields.
  * Independent module: knows nothing about HCP, bookings, or the voice agent.
+ *
+ * Census returns ALL CAPS; we title-case street/city before returning so HCP
+ * service addresses are not stored as "703 BUCKBOARD ST".
  */
+
+import { normalizeState, titleCaseAddressPart } from "./contact-normalize.js";
 
 export interface ResolvedAddress {
   street: string;
@@ -43,13 +48,16 @@ export async function resolveAddress(
     const match = data.result?.addressMatches?.[0];
     if (!match) return null;
 
-    const street = (match.matchedAddress ?? "").split(",")[0]?.trim() ?? "";
+    const rawStreet = (match.matchedAddress ?? "").split(",")[0]?.trim() ?? "";
+    const rawCity = match.addressComponents?.city ?? "";
+    const rawState = match.addressComponents?.state ?? "";
+    const zip = (match.addressComponents?.zip ?? "").trim();
 
     return {
-      street,
-      city: match.addressComponents?.city ?? "",
-      state: match.addressComponents?.state ?? "",
-      zip: match.addressComponents?.zip ?? "",
+      street: titleCaseAddressPart(rawStreet),
+      city: titleCaseAddressPart(rawCity),
+      state: normalizeState(rawState),
+      zip,
       latitude: match.coordinates.y,
       longitude: match.coordinates.x,
     };

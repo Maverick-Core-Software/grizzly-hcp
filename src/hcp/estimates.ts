@@ -3,6 +3,7 @@
  * Prices throughout are in DOLLARS — we convert to cents internally.
  */
 import { hcpPost, hcpPostForm, hcpPut, hcpPatch, hcpDelete, hcpGet } from './client.js';
+import { normalizeUsPhone } from './contact-normalize.js';
 import { v4 as uuid } from 'uuid';
 
 const toCents = (dollars: number) => Math.round(dollars * 100);
@@ -405,6 +406,10 @@ export async function createCustomer(opts: {
   const firstName = parts[0] || opts.name;
   const lastName = parts.slice(1).join(' ') || '';
 
+  // HCP customer cards surface mobile_number. phone_number alone often leaves
+  // "No phone listed" on the customer (seen on voice-created records).
+  const mobile = normalizeUsPhone(opts.phone) ?? '';
+
   const res = await hcpPost<{
     id: string;
     display_name: string;
@@ -413,7 +418,8 @@ export async function createCustomer(opts: {
     first_name: firstName,
     last_name: lastName,
     email: opts.email,
-    phone_number: opts.phone ?? '',
+    mobile_number: mobile,
+    phone_number: mobile,
     addresses_attributes: [{ street: '' }],
   });
 
