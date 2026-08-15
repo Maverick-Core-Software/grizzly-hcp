@@ -26,6 +26,7 @@ import type { ResolvedAddress } from '../../hcp/geocode.js';
 import { formatDisplayAddress, normalizeUsPhone } from '../../hcp/contact-normalize.js';
 import { attachBookingLineItems, hasPriceConcern } from './booking-line-items.js';
 import { sendOpsAlert } from '../../ops/alert.js';
+import { formatScheduleReplyHint } from './schedule-command.js';
 
 interface BookingPayload {
   customerName?: string;
@@ -130,8 +131,9 @@ function buildNote(
       `Issue: ${p.issue ?? 'not given'}`,
       `Preferred times: ${(p.preferredWindows ?? []).join('  |  ') || 'not given'}`,
       '',
-      'TO APPROVE: add a note to this estimate starting with SCHEDULE, e.g.',
-      'SCHEDULE 07/14 2:00 pm - 4:00 pm',
+      'TO APPROVE (either):',
+      '• HCP note: SCHEDULE MM/DD h:mm am - h:mm pm',
+      '• Ops SMS reply: SCHEDULE <estimate#> MM/DD h:mm am - h:mm pm',
       'Maverick will book it and HCP will notify the customer.',
     );
   } else {
@@ -371,8 +373,9 @@ try {
       ...(leadSource ? [`Lead source: ${leadSource}`] : []),
       `Issue: ${p.issue ?? p.message ?? 'n/a'}`,
       `Estimate #${estimate.estimateId}`,
-      `https://pro.housecallpro.com/app/estimates/${estimate.uuid}`,
-      status === 'needs_address_review' ? 'ADDRESS UNVERIFIED — office must fix' : 'Add a SCHEDULE note to approve.',
+      status === 'needs_address_review'
+        ? 'ADDRESS UNVERIFIED — office must fix'
+        : formatScheduleReplyHint(estimate.estimateId),
     ].join('\n'),
     { priority: 'high', tags: 'telephone_receiver' },
   );
