@@ -6,6 +6,8 @@
   "scripts": {
     "login": "tsx src/hcp/auth.ts",
     "relogin": "tsx scripts/hcp-relogin.ts",
+    "keepalive": "tsx scripts/hcp-keepalive.ts",
+    "verify-keepalive": "tsx scripts/verify-keepalive.ts",
     "preflight-auth": "tsx src/hcp/preflight-cli.ts",
     "estimate": "tsx src/automations/estimates/from-proposal.ts",
     "templates": "tsx src/hcp/list-templates.ts",

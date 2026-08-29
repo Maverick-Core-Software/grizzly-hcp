@@ -70,6 +70,10 @@ routing lengths, and labor hours that feed into the scope before the pipeline ru
 | Command | What it does |
 |---------|-------------|
 | `npm run login` | Log into HCP and save browser session (run once) |
+| `npm run keepalive` | Roll the HCP session cookie ~14 days forward with one authenticated GET — no browser. Runs daily via the `Grizzly_HCPKeepalive` Scheduled Task; a non-zero exit means the session is genuinely dead |
+| `npm run verify-keepalive` | Prove the keepalive is really working: authenticated probe + the expiry *as stored on disk*. Alerts on pass and fail. Add `--no-alert` to run it silently |
+| `npm run relogin` | Recovery path only: headless session check, then a headed Google OAuth sign-in. Needed when `keepalive` reports a 401. Add `--no-oauth` to inspect profile health without opening a window |
+| `npm run preflight-auth` | One authenticated read to prove the live auth path (daemon or cookies) works |
 | `npm run estimate <file>` | Parse proposal PDF/DOCX → create HCP estimate via API |
 | `npm run estimate <file> -- --dry-run` | Parse only, show what would be sent — no HCP changes |
 | `npm run estimate <file> -- --template <eot_uuid>` | Same but applies a saved HCP template first |
