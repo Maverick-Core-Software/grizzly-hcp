@@ -20,16 +20,6 @@ module.exports = {
       windowsHide: true,
     },
     {
-      name: 'mav-slack',
-      script: 'node_modules/tsx/dist/cli.mjs',
-      args: 'src/automations/slack/index.ts',
-      cwd: __dirname,
-      autorestart: true,
-      max_restarts: 10,
-      restart_delay: 5000,
-      windowsHide: true,
-    },
-    {
       name: 'customer-chat-server',
       script: 'node_modules/tsx/dist/cli.mjs',
       args: 'src/server/customer-chat-server.ts',
