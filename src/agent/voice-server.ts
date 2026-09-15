@@ -42,9 +42,12 @@ const PUBLIC_URL = (process.env.VOICE_PUBLIC_URL ?? 'https://voice.grizzlyelectr
 const CARTER_PHONE = process.env.CARTER_PHONE ?? '';
 const JAIME_PHONE = process.env.JAIME_PHONE ?? '';
 // ponytail: TTS is env-swappable, not per-call configurable — flip .env, restart, done.
-// Empty VOICE_TTS_VOICE omits the attribute so Twilio uses the provider's default voice.
-const TTS_PROVIDER = process.env.VOICE_TTS_PROVIDER ?? '';
-const TTS_VOICE = process.env.VOICE_TTS_VOICE ?? 'Polly.Joanna-Neural';
+// The provider is ALWAYS emitted now: Twilio's ConversationRelay default flipped to
+// ElevenLabs, which rejects Amazon-style voice names (relay error 64106 → callers heard
+// silence), so relying on the platform default is what broke the line in the first place.
+// Empty env values fall back to these defaults.
+const TTS_PROVIDER = process.env.VOICE_TTS_PROVIDER || 'ElevenLabs';
+const TTS_VOICE = normalizeTtsVoice(TTS_PROVIDER, process.env.VOICE_TTS_VOICE || 'UgBBYS2sOqTuMpoF3BR0');
 const MAX_HISTORY = 30;
 
 const GREETING = "Thanks for calling Grizzly Electrical! This is Maverick, the automated assistant. How can I help you today?";
@@ -68,6 +71,28 @@ const sessions = new Map<string, CallSession>();
 
 function xmlEscape(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+/**
+ * TTS attributes for <ConversationRelay>. `provider` is always emitted — Twilio's
+ * default provider changed on us once and silently killed the line (ElevenLabs default
+ * + Amazon-style voice name → relay error 64106), so the platform default is never
+ * trusted again. `voice` stays optional for the empty-value edge case only.
+ */
+export function buildRelayTtsAttrs(provider: string, voice: string): string {
+  return ` ttsProvider="${xmlEscape(provider)}"` + (voice ? ` voice="${xmlEscape(voice)}"` : '');
+}
+
+/**
+ * ConversationRelay wants the bare Amazon voice name ("Joanna-Neural"), but old configs
+ * carry the legacy Polly. namespace ("Polly.Joanna-Neural"). Strip it so a stale .env
+ * can't take the line down again. Pure — the one warning fires at startup.
+ */
+export function normalizeTtsVoice(provider: string, voice: string): string {
+  if (provider.trim().toLowerCase() !== 'amazon' || !voice.startsWith('Polly.')) return voice;
+  const bare = voice.slice('Polly.'.length);
+  console.warn(`[voice] VOICE_TTS_VOICE="${voice}" is legacy Amazon naming — using "${bare}" (ConversationRelay expects the bare voice name, no Polly. prefix)`);
+  return bare;
 }
 
 function readBody(req: http.IncomingMessage): Promise<string> {
@@ -180,9 +205,7 @@ const server = http.createServer(async (req, res) => {
   if (req.method === 'POST' && url.pathname === '/twiml') {
     // Twilio Voice webhook → hand the call to ConversationRelay.
     const wsUrl = PUBLIC_URL.replace(/^http/, 'ws') + '/ws';
-    const ttsAttrs =
-      (TTS_PROVIDER ? ` ttsProvider="${xmlEscape(TTS_PROVIDER)}"` : '') +
-      (TTS_VOICE ? ` voice="${xmlEscape(TTS_VOICE)}"` : '');
+    const ttsAttrs = buildRelayTtsAttrs(TTS_PROVIDER, TTS_VOICE);
     sendXml(res, `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Connect action="${xmlEscape(PUBLIC_URL + '/handoff')}">
@@ -467,6 +490,7 @@ function sendText(ws: WebSocket, text: string) {
 
 server.listen(PORT, () => {
   console.log(`[voice] Maverick Voice Server listening on :${PORT} (public: ${PUBLIC_URL})`);
+  console.log(`[voice] TTS provider=${TTS_PROVIDER} voice=${TTS_VOICE}`);
   if (!CARTER_PHONE || !JAIME_PHONE) {
     console.warn('[voice] WARNING: CARTER_PHONE / JAIME_PHONE not set — emergency transfer will fail');
   }
