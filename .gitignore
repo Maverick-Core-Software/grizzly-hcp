@@ -18,3 +18,7 @@ proposals/
 __pycache__/
 *.pyc
 .env.bak*
+
+# agent scratch: pi worker transcripts and research handoffs
+.pi-subagents/
+artifacts/

@@ -28,6 +28,7 @@ import {
 } from './sms-intake.js';
 import { SqliteSmsInboundEventStore } from './sms-inbound-event-store.js';
 import { sendOpsAlert } from '../ops/alert.js';
+import { createThumbtackReplyHandler, isLoopbackAddress } from './thumbtack-reply.js';
 
 const { validateRequest } = twilio;
 const PORT = Number(process.env.CUSTOMER_CHAT_PORT ?? 3012);
@@ -369,6 +370,7 @@ export function createCustomerChatWebhook(deps: CustomerChatWebhookDependencies)
 
 const agent = createMaverickAgent('customer');
 const employeeAgent = createMaverickAgent('employee');
+const handleThumbtackReply = createThumbtackReplyHandler();
 const twilioClient = new twilio.Twilio(process.env.TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
 
 async function sendSms(to: string, body: string, from = TWILIO_PHONE_NUMBER): Promise<void> {
@@ -458,6 +460,25 @@ export const server = http.createServer(async (req, res) => {
   if (req.method === 'GET' && req.url === '/health') {
     res.writeHead(200, { 'content-type': 'text/plain' });
     res.end('customer-chat-server ok\n');
+    return;
+  }
+  if (req.method === 'POST' && req.url === '/internal/thumbtack/reply') {
+    if (!isLoopbackAddress(req.socket.remoteAddress)) {
+      res.writeHead(403, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ success: false, error: 'loopback only' }));
+      return;
+    }
+    let raw = '';
+    for await (const chunk of req) raw += chunk;
+    let payload = {};
+    try { payload = raw ? JSON.parse(raw) : {}; } catch {
+      res.writeHead(400, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ success: false, error: 'Invalid JSON.' }));
+      return;
+    }
+    const result = await handleThumbtackReply(payload);
+    res.writeHead(result.success ? 200 : 502, { 'content-type': 'application/json' });
+    res.end(JSON.stringify(result));
     return;
   }
   if (req.method !== 'POST' || req.url !== '/webhook/twilio') {

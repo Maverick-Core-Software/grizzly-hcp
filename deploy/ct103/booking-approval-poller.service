@@ -1,0 +1,40 @@
+[Unit]
+Description=Grizzly HCP Booking Approval Poller — watches pending-bookings.jsonl for SCHEDULE notes and updates HCP job schedule
+Documentation=file:///opt/grizzly-hcp/deploy/ct103/README-BOOKING-POLLER.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Install root for the grizzly-hcp checkout on CT103 (mcc-prod).
+# Chosen over /opt/maverick-integrations/services/grizzly-hcp because existing
+# grizzly docs and AIWA-era plans already use /opt/grizzly-hcp.
+WorkingDirectory=/opt/grizzly-hcp
+# Runs as root (matches deploy/aiwa/*.service style — no dedicated unit user).
+# If CT103 later standardizes on a service account, set User=/Group= and chown
+# /opt/grizzly-hcp/data accordingly.
+EnvironmentFile=/etc/maverick-integrations/booking-poller.env
+# America/Chicago is mandatory: approval-poller builds local-offset ISO timestamps
+# from process TZ. Do not rely on host default alone — set it here too.
+Environment=TZ=America/Chicago
+# systemd needs an absolute path. Prefer the vendored tsx CLI (same as PM2
+# ecosystem.config.cjs) so ExecStart does not depend on npx PATH resolution.
+# Confirm node with: command -v node && node --version  (need node20+).
+ExecStart=/usr/bin/node /opt/grizzly-hcp/node_modules/tsx/dist/cli.mjs src/automations/bookings/approval-poller.ts
+Restart=always
+RestartSec=5
+# Cap restart storms if MCP is down for a long window
+StartLimitIntervalSec=300
+StartLimitBurst=20
+SyslogIdentifier=booking-approval-poller
+
+# Long-lived process: needs write access under the install root for
+# data/pending-bookings.jsonl (atomic rewrite via .tmp + rename).
+ProtectSystem=full
+PrivateTmp=yes
+NoNewPrivileges=yes
+ProtectHome=yes
+ReadWritePaths=/opt/grizzly-hcp/data
+
+[Install]
+WantedBy=multi-user.target
