@@ -15,7 +15,14 @@ async function buildDialActionTwiml(context, event) {
     twiml.redirect(`/fallback?role=${transferRole}`);
     return twiml;
   }
-  if (c0.isAnswered(event)) {
+  let admission;
+  try {
+    admission = await c0.admissionForParent(context, parentCallSid);
+  } catch (error) {
+    if (!(error && error.status === 404)) return c0.fallbackTwiml();
+  }
+  if (admission && c0.isAnswered(event)) {
+    await admission.remove();
     const twiml = c0.response();
     twiml.hangup();
     return twiml;

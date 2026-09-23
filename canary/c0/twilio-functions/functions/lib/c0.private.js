@@ -188,6 +188,28 @@ async function consumeTransfer(context, parentCallSid) {
   return role;
 }
 
+/**
+ * A positive admission is deliberately distinct from SIP connection.  A Dial
+ * can complete after the agent immediately refuses it, so only an agent-written
+ * admission document may authorize the completed-Dial hangup path.  Removal is
+ * best effort: consumption is a cleanup concern, not a reason to strand an
+ * already admitted caller.
+ */
+async function admissionForParent(context, parentCallSid) {
+  const { documents } = syncDocuments(context);
+  const uniqueName = `c0-admitted-${parentCallSid}`;
+  const current = await documents(uniqueName).fetch();
+  return {
+    async remove() {
+      try {
+        await documents(current.sid || uniqueName).remove();
+      } catch {
+        // The one-shot admission TTL is the backstop when best-effort deletion fails.
+      }
+    },
+  };
+}
+
 module.exports = {
   DISCLOSURE,
   EMERGENCY_NOTICE,
@@ -196,6 +218,7 @@ module.exports = {
   callbackWith,
   acquireLease,
   boundedInteger,
+  admissionForParent,
   consumeTransfer,
   fallbackTwiml,
   isAnswered,

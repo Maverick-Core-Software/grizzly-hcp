@@ -18,7 +18,9 @@ Before deploying, confirm the canary number's Voice handler points at `/ingress`
 
 ## Sync lease and transfer state
 
-Set `C0_SYNC_SERVICE_SID` to the isolated C0 Sync Service. The restricted key used by the Functions must be permitted to create, fetch, conditionally update, and delete Sync Documents in that service; Functions require the same document operations for the `c0-lease` admission lease and short-lived `c0-transfer-<ParentCallSid>` handoff flags. The ingress lease expires after `C0_TIME_LIMIT_S + 120` seconds, while transfer flags expire after 900 seconds.
+Set `C0_SYNC_SERVICE_SID` to the isolated C0 Sync Service. The restricted key used by the Functions must be permitted to create, fetch, conditionally update, and delete Sync Documents in that service; Functions require the same document operations for the `c0-lease` admission lease, short-lived `c0-transfer-<ParentCallSid>` handoff flags, and short-lived `c0-admitted-<ParentCallSid>` positive-admission flags. The ingress lease expires after `C0_TIME_LIMIT_S + 120` seconds, while transfer and admission flags expire after 900 seconds.
+
+`/dial-action` consumes a transfer flag first. Otherwise it hangs up a completed Dial only when the matching positive-admission document exists; a missing admission document or any Sync read failure goes to office fallback. This keeps a SIP leg that disconnects before canary admission from being mistaken for completed service.
 
 The rehearsal should still observe the parent-call redirect and `<Dial action>` ordering, but it is no longer correctness-critical: the transfer document is written before the agent terminates or redirects its AI leg, and `/dial-action` consumes that flag before considering a successful Dial outcome.
 

@@ -19,6 +19,7 @@ function error(status: number) { const value: Error & { status?: number } = new 
 type FakeSyncOptions = {
   createError?: number;
   fetchError?: number;
+  fetchErrors?: Record<string, number>;
   callFetchError?: number;
   updateError?: number;
   beforeUpdate?: (options: any) => Promise<void> | void;
@@ -27,7 +28,7 @@ type FakeSyncOptions = {
 function fakeSync(initial: Array<{ uniqueName: string; data: unknown; revision?: string }> = [], statuses: Record<string, string | number> = {}, behavior: FakeSyncOptions = {}) {
   const documents = new Map(initial.map((document, index) => [document.uniqueName, { sid: `ET${index}`, revision: document.revision || '1', ...document }]));
   const documentApi: any = (key: string) => ({
-    fetch: async () => { if (behavior.fetchError) throw error(behavior.fetchError); const document = documents.get(key) || [...documents.values()].find((item) => item.sid === key); if (!document) throw error(404); return { ...document }; },
+    fetch: async () => { if (behavior.fetchErrors?.[key]) throw error(behavior.fetchErrors[key]); if (behavior.fetchError) throw error(behavior.fetchError); const document = documents.get(key) || [...documents.values()].find((item) => item.sid === key); if (!document) throw error(404); return { ...document }; },
     remove: async () => { const document = documents.get(key) || [...documents.values()].find((item) => item.sid === key); if (!document) throw error(404); documents.delete(document.uniqueName); return true; },
     update: async (updateOptions: any) => {
       await behavior.beforeUpdate?.(updateOptions);
@@ -133,10 +134,23 @@ async function main() {
   const revisionConflict = await invoke(ingress.handler, context(fakeSync([{ uniqueName: 'c0-lease', data: { callSid: second, acquiredAt: 'old' } }], { [second]: 'completed' }, { updateError: 412 })), { From: caller, CallSid: first });
   assertFallbackWithoutDial(revisionConflict, 'revision conflict is contended');
 
-  const transfer = fakeSync([{ uniqueName: `c0-transfer-${first}`, data: { role: 'backup', by: 'agent' } }]);
+  const unadmittedAnswered = await invoke(dialAction.handler, context(), { ParentCallSid: first, DialCallStatus: 'completed', DialCallDuration: '30' });
+  assert.match(unadmittedAnswered, /<Redirect>\/fallback<\/Redirect>/, 'completed SIP without positive admission falls back');
+  assert.doesNotMatch(unadmittedAnswered, /<Hangup\/>/, 'completed SIP without positive admission does not hang up');
+
+  const admitted = fakeSync([{ uniqueName: `c0-admitted-${first}`, data: { by: 'agent' } }]);
+  const admittedAnswered = await invoke(dialAction.handler, context(admitted), { ParentCallSid: first, DialCallStatus: 'completed', DialCallDuration: '30' });
+  assert.match(admittedAnswered, /<Hangup\/>/, 'positive admission plus completed Dial hangs up');
+  assert.equal(admitted.documents.has(`c0-admitted-${first}`), false, 'positive admission is consumed best effort');
+
+  const transfer = fakeSync([
+    { uniqueName: `c0-transfer-${first}`, data: { role: 'backup', by: 'agent' } },
+    { uniqueName: `c0-admitted-${first}`, data: { by: 'agent' } },
+  ]);
   const redirected = await invoke(dialAction.handler, context(transfer), { ParentCallSid: first, DialCallStatus: 'completed', DialCallDuration: '30' });
-  assert.match(redirected, /<Redirect>\/fallback\?role=backup<\/Redirect>/); assert.doesNotMatch(redirected, /<Hangup/);
-  const syncFailure = await invoke(dialAction.handler, context(fakeSync(), { getTwilioClient: () => { throw new Error('sync failure'); } }), { CallSid: first, DialCallStatus: 'completed', DialCallDuration: '1' });
+  assert.match(redirected, /<Redirect>\/fallback\?role=backup<\/Redirect>/, 'transfer flag beats positive admission'); assert.doesNotMatch(redirected, /<Hangup/);
+  assert.equal(transfer.documents.has(`c0-admitted-${first}`), true, 'transfer precedence does not consume admission');
+  const syncFailure = await invoke(dialAction.handler, context(fakeSync([], {}, { fetchErrors: { [`c0-admitted-${first}`]: 500 } })), { CallSid: first, DialCallStatus: 'completed', DialCallDuration: '1' });
   assert.match(syncFailure, /<Redirect>\/fallback<\/Redirect>/);
 
   const office = await invoke(fallback.handler, context(), {});
