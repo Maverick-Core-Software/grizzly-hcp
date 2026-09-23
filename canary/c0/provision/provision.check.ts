@@ -5,7 +5,8 @@ import { join } from 'node:path';
 import { createRestrictedKeys } from './twilio-restricted-keys.js';
 import { routeCanaryNumber } from './twilio-number-route.js';
 import { assertOnlyVoiceUrlChanged, isEntryPoint, loadC0Env, printSafe, redact, safeFailureMessage, writeEvidence } from './lib.js';
-import { assertExplicitTrunkIds, provisionLivekitSip, reconcileSip } from './livekit-sip.js';
+import { assertExplicitTrunkIds, provisionLivekitSip, reconcileSip, type SipProvisionClient } from './livekit-sip.js';
+import { SIPDispatchRule, SIPDispatchRuleIndividual, SIPDispatchRuleInfo, SIPInboundTrunkInfo, type CreateSipInboundTrunkOptions } from 'livekit-server-sdk';
 import { fakeSid } from './fake-fixtures.js';
 
 const DID = '+15551230001';
@@ -42,14 +43,15 @@ async function run(): Promise<void> {
 
   assert.throws(() => assertExplicitTrunkIds([]), /explicit trunkIds/);
   let sipMutations = 0;
-  let createOptions: Record<string, unknown> | undefined;
-  let replacement: Record<string, unknown> | undefined;
-  const sip = {
+  let createOptions: CreateSipInboundTrunkOptions | undefined;
+  let replacement: SIPInboundTrunkInfo | undefined;
+  let ruleReplacement: SIPDispatchRuleInfo | undefined;
+  const sip: SipProvisionClient = {
     listSipInboundTrunk: async () => [], listSipDispatchRule: async () => [],
-    createSipInboundTrunk: async (_name: string, _numbers: string[], options: Record<string, unknown>) => { sipMutations += 1; createOptions = options; return { sipTrunkId: 'ST1234567890', name: 'grizzly-c0-canary-inbound' }; },
-    updateSipInboundTrunk: async (_id: string, trunk: Record<string, unknown>) => { sipMutations += 1; replacement = trunk; return { sipTrunkId: 'ST1234567890', name: 'grizzly-c0-canary-inbound' }; },
-    createSipDispatchRule: async () => { sipMutations += 1; return { sipDispatchRuleId: 'SD1234567890', name: 'grizzly-c0-canary-dispatch', trunkIds: ['ST1234567890'] }; },
-    updateSipDispatchRule: async (_id: string, rule: any) => { sipMutations += 1; return { ...rule, sipDispatchRuleId: 'SD1234567890' }; },
+    createSipInboundTrunk: async (_name, _numbers, options) => { sipMutations += 1; createOptions = options; return new SIPInboundTrunkInfo({ sipTrunkId: 'ST1234567890', name: 'grizzly-c0-canary-inbound' }); },
+    updateSipInboundTrunk: async (_id: string, trunk: SIPInboundTrunkInfo) => { sipMutations += 1; replacement = trunk; return new SIPInboundTrunkInfo({ ...trunk, sipTrunkId: 'ST1234567890' }); },
+    createSipDispatchRule: async () => { sipMutations += 1; return new SIPDispatchRuleInfo({ sipDispatchRuleId: 'SD1234567890', name: 'grizzly-c0-canary-dispatch', trunkIds: ['ST1234567890'], rule: new SIPDispatchRule({ rule: { case: 'dispatchRuleIndividual', value: new SIPDispatchRuleIndividual({ roomPrefix: 'c0-' }) } }) }); },
+    updateSipDispatchRule: async (_id: string, rule: SIPDispatchRuleInfo) => { sipMutations += 1; ruleReplacement = rule; return new SIPDispatchRuleInfo({ ...rule, sipDispatchRuleId: 'SD1234567890' }); },
   };
   const drySip = await reconcileSip(sip, { did: DID, allowedNumbers: ['+15551230002'], authUsername: 'sip-user', authPassword: 'sip-password', mediaEncryption: 'SIP_MEDIA_ENCRYPT_ALLOW' }, false);
   assert.equal(drySip.dryRun, true); assert.equal(sipMutations, 0, 'LiveKit dry-run makes no mutation');
@@ -58,19 +60,27 @@ async function run(): Promise<void> {
   assert.equal(appliedSip.dryRun, false); assert.equal(sipMutations, 4, 'creation applies trunk limits, rule, and allow-list replacement');
   assert.equal(livekitEnvWrites, 1, 'applied LiveKit reconciliation writes canonical trunk and rule IDs');
   assert.equal(createOptions?.ringingTimeout, 15, 'SDK create options receive numeric ringing-timeout seconds');
-  assert.equal(createOptions?.maxCallDuration, undefined, 'SDK create options omit unsupported max-call duration');
-  assert.equal((replacement?.maxCallDuration as { seconds: bigint }).seconds, 480n, 'full replacement retains protobuf max-call duration');
+  assert.equal(replacement?.maxCallDuration?.seconds, 480n, 'full replacement retains protobuf max-call duration');
+  assert.equal(ruleReplacement?.rule?.rule.case, 'dispatchRuleIndividual', 'replacement retains the protobuf dispatch-rule oneof');
+  assert.equal(ruleReplacement?.rule?.rule.value?.roomPrefix, 'c0-');
+  assert.equal(ruleReplacement?.roomConfig?.agents[0]?.agentName, 'grizzly-c0-canary', 'replacement uses RoomConfiguration agent messages');
+  if (!appliedSip.dryRun) {
+    assert.deepEqual(appliedSip.trunk.ringingTimeout, { seconds: 15, nanos: 0 }, 'public evidence converts fake-SDK bigint Duration seconds to numbers');
+    assert.deepEqual(appliedSip.trunk.maxCallDuration, { seconds: 480, nanos: 0 });
+  }
 
   const evidenceRoot = await mkdtemp(join(tmpdir(), 'c0-provision-check-'));
   const secret = 'not-for-stdout-or-evidence';
   const originalLog = console.log; let stdout = '';
   console.log = (...values: unknown[]) => { stdout += values.join(' '); };
-  try { printSafe({ authPassword: secret, nested: { secret } }); } finally { console.log = originalLog; }
+  try { printSafe({ authPassword: secret, nested: { secret }, livekit: appliedSip, duration: { seconds: 15n } }); } finally { console.log = originalLog; }
   assert.ok(!stdout.includes(secret), 'secret never appears in stdout');
+  assert.ok(stdout.includes('15'), 'printSafe serializes bigint values');
   assert.ok(!safeFailureMessage(new Error(secret), 'test').includes(secret), 'provider errors never leak to stdout');
-  const evidencePath = await writeEvidence('redaction', { authPassword: secret, nested: { secret }, sid: 'AC12345678' }, evidenceRoot);
+  const evidencePath = await writeEvidence('redaction', { authPassword: secret, nested: { secret }, sid: 'AC12345678', livekit: appliedSip, duration: { seconds: 480n } }, evidenceRoot);
   const evidence = await readFile(evidencePath, 'utf8');
   assert.ok(!evidence.includes(secret), 'secret never appears in evidence');
+  assert.ok(evidence.includes('480'), 'writeEvidence serializes bigint values');
   assert.equal((redact({ authPassword: secret }) as any).authPassword, '[REDACTED]');
   const configPath = join(evidenceRoot, 'c0-config');
   await writeFile(configPath, 'VOICE_C0_ENABLED=false\nVOICE_OUTBOX_STALE_MS=123\nUNRELATED=value\n', 'utf8');

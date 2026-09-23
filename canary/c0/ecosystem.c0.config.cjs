@@ -1,3 +1,4 @@
+// Reference only: c0ctl.ps1 is used on Windows; this configuration is not executed there.
 const path = require('node:path');
 
 const c0Root = __dirname;

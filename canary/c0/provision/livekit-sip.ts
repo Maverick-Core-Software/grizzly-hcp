@@ -1,16 +1,25 @@
-import { SipClient } from 'livekit-server-sdk';
+import { Duration } from '@bufbuild/protobuf';
+import { SIPMediaEncryption } from '@livekit/protocol';
+import {
+  RoomAgentDispatch,
+  RoomConfiguration,
+  SIPDispatchRule,
+  SIPDispatchRuleIndividual,
+  SIPDispatchRuleInfo,
+  SIPInboundTrunkInfo,
+  SipClient,
+  type CreateSipDispatchRuleOptions,
+  type CreateSipInboundTrunkOptions,
+  type SipDispatchRuleIndividual as SipDispatchRuleIndividualInput,
+} from 'livekit-server-sdk';
 import { assertApply, isApply, isEntryPoint, loadC0Env, mask, printSafe, required, safeFailureMessage, upsertC0EnvAtomically, valueOr, writeEvidence, type Env } from './lib.js';
 
-type Trunk = Record<string, any>;
-type Rule = Record<string, any>;
-export type SipProvisionClient = {
-  listSipInboundTrunk: () => Promise<Trunk[]>;
-  createSipInboundTrunk: (name: string, numbers: string[], options: Record<string, unknown>) => Promise<Trunk>;
-  updateSipInboundTrunk: (id: string, trunk: Trunk) => Promise<Trunk>;
-  listSipDispatchRule: () => Promise<Rule[]>;
-  createSipDispatchRule: (rule: { type: 'individual'; roomPrefix: string }, options: Record<string, unknown>) => Promise<Rule>;
-  updateSipDispatchRule: (id: string, rule: Rule) => Promise<Rule>;
-};
+export type SipProvisionClient = Pick<SipClient,
+  'listSipInboundTrunk' | 'createSipInboundTrunk' | 'updateSipInboundTrunk'
+  | 'listSipDispatchRule' | 'createSipDispatchRule' | 'updateSipDispatchRule'>;
+export type SipReconcileResult =
+  | { dryRun: true; requestedTrunk: Record<string, unknown>; requestedRule: Record<string, unknown> }
+  | { dryRun: false; trunk: Record<string, unknown>; rule: Record<string, unknown>; trunkId: string; ruleId: string };
 
 export const C0_TRUNK_NAME = 'grizzly-c0-canary-inbound';
 export const C0_RULE_NAME = 'grizzly-c0-canary-dispatch';
@@ -19,57 +28,124 @@ export function assertExplicitTrunkIds(trunkIds: string[]): void {
   if (!Array.isArray(trunkIds) || trunkIds.length === 0 || trunkIds.some((id) => !id)) throw new Error('Refusing dispatch rule without explicit trunkIds');
 }
 
-export function c0TrunkSpec(did: string, allowedNumbers: string[], authUsername: string, authPassword: string, mediaEncryption: string): Trunk {
-  if (!['SIP_MEDIA_ENCRYPT_ALLOW', 'SIP_MEDIA_ENCRYPT_REQUIRE', 'SIP_MEDIA_ENCRYPT_DISABLE'].includes(mediaEncryption)) throw new Error('Invalid VOICE_C0_LIVEKIT_MEDIA_ENCRYPTION');
-  return { name: C0_TRUNK_NAME, numbers: [did], allowedNumbers, authUsername, authPassword, headersToAttributes: { 'X-C0-Call': 'c0.callSid' }, ringingTimeout: { seconds: BigInt(15), nanos: 0 }, maxCallDuration: { seconds: BigInt(480), nanos: 0 }, media: { encryption: mediaEncryption } };
+const MEDIA_ENCRYPTION_BY_NAME = {
+  SIP_MEDIA_ENCRYPT_ALLOW: SIPMediaEncryption.SIP_MEDIA_ENCRYPT_ALLOW,
+  SIP_MEDIA_ENCRYPT_REQUIRE: SIPMediaEncryption.SIP_MEDIA_ENCRYPT_REQUIRE,
+  SIP_MEDIA_ENCRYPT_DISABLE: SIPMediaEncryption.SIP_MEDIA_ENCRYPT_DISABLE,
+} as const;
+
+type C0RuleSpec = Pick<SIPDispatchRuleInfo, 'name' | 'trunkIds' | 'hidePhoneNumber' | 'inboundNumbers' | 'roomConfig'>;
+
+export function c0TrunkSpec(did: string, allowedNumbers: string[], authUsername: string, authPassword: string, mediaEncryption: string): SIPInboundTrunkInfo {
+  const encryption = MEDIA_ENCRYPTION_BY_NAME[mediaEncryption as keyof typeof MEDIA_ENCRYPTION_BY_NAME];
+  if (encryption === undefined) throw new Error('Invalid VOICE_C0_LIVEKIT_MEDIA_ENCRYPTION');
+  return new SIPInboundTrunkInfo({
+    name: C0_TRUNK_NAME,
+    numbers: [did],
+    allowedNumbers,
+    authUsername,
+    authPassword,
+    headersToAttributes: { 'X-C0-Call': 'c0.callSid' },
+    ringingTimeout: new Duration({ seconds: 15n }),
+    maxCallDuration: new Duration({ seconds: 480n }),
+    media: { encryption },
+  });
 }
 
-export function c0RuleSpec(trunkIds: string[], allowedNumbers: string[]): Rule {
+export function c0RuleSpec(trunkIds: string[], allowedNumbers: string[]): C0RuleSpec {
   assertExplicitTrunkIds(trunkIds);
-  return { name: C0_RULE_NAME, trunkIds, hidePhoneNumber: true, inboundNumbers: allowedNumbers, rule: { type: 'individual', roomPrefix: 'c0-' }, roomConfig: { agents: [{ agentName: 'grizzly-c0-canary' }] } };
+  return {
+    name: C0_RULE_NAME,
+    trunkIds,
+    hidePhoneNumber: true,
+    inboundNumbers: allowedNumbers,
+    roomConfig: new RoomConfiguration({ agents: [new RoomAgentDispatch({ agentName: 'grizzly-c0-canary' })] }),
+  };
 }
 
-function publicTrunk(trunk: Trunk): Record<string, unknown> {
-  return { id: mask(trunk.sipTrunkId), name: trunk.name, numbers: trunk.numbers, allowedNumbers: trunk.allowedNumbers, ringingTimeout: trunk.ringingTimeout, maxCallDuration: trunk.maxCallDuration, media: trunk.media, headersToAttributes: trunk.headersToAttributes };
+function publicDuration(duration: Duration | undefined): { seconds: number; nanos: number } | undefined {
+  return duration ? { seconds: Number(duration.seconds), nanos: duration.nanos } : undefined;
 }
 
-function publicRule(rule: Rule): Record<string, unknown> {
-  return { id: mask(rule.sipDispatchRuleId), name: rule.name, trunkIds: (rule.trunkIds ?? []).map(mask), hidePhoneNumber: rule.hidePhoneNumber, inboundNumbers: rule.inboundNumbers, roomConfig: rule.roomConfig, rule: rule.rule };
+function publicTrunk(trunk: SIPInboundTrunkInfo): Record<string, unknown> {
+  return {
+    id: mask(trunk.sipTrunkId), name: trunk.name, numbers: trunk.numbers, allowedNumbers: trunk.allowedNumbers,
+    ringingTimeout: publicDuration(trunk.ringingTimeout), maxCallDuration: publicDuration(trunk.maxCallDuration),
+    media: trunk.media ? { encryption: trunk.media.encryption } : undefined, headersToAttributes: trunk.headersToAttributes,
+  };
 }
 
-export async function reconcileSip(client: SipProvisionClient, input: { did: string; allowedNumbers: string[]; authUsername: string; authPassword: string; mediaEncryption: string }, apply: boolean) {
+function publicRule(rule: SIPDispatchRuleInfo): Record<string, unknown> {
+  const dispatch = rule.rule?.rule;
+  return {
+    id: mask(rule.sipDispatchRuleId), name: rule.name, trunkIds: rule.trunkIds.map(mask), hidePhoneNumber: rule.hidePhoneNumber,
+    inboundNumbers: rule.inboundNumbers, roomConfig: rule.roomConfig ? { agents: rule.roomConfig.agents.map((agent) => ({ agentName: agent.agentName })) } : undefined,
+    rule: dispatch?.case === 'dispatchRuleIndividual' ? { case: dispatch.case, roomPrefix: dispatch.value.roomPrefix } : { case: dispatch?.case },
+  };
+}
+
+function dispatchRuleIndividual(): SIPDispatchRule {
+  return new SIPDispatchRule({ rule: { case: 'dispatchRuleIndividual', value: new SIPDispatchRuleIndividual({ roomPrefix: 'c0-' }) } });
+}
+
+function replacementTrunk(existing: SIPInboundTrunkInfo, spec: SIPInboundTrunkInfo): SIPInboundTrunkInfo {
+  return new SIPInboundTrunkInfo({ ...existing, ...spec });
+}
+
+function replacementRule(existing: SIPDispatchRuleInfo, spec: C0RuleSpec): SIPDispatchRuleInfo {
+  return new SIPDispatchRuleInfo({
+    ...existing,
+    name: spec.name,
+    trunkIds: spec.trunkIds,
+    hidePhoneNumber: spec.hidePhoneNumber,
+    inboundNumbers: spec.inboundNumbers,
+    roomConfig: spec.roomConfig,
+    rule: existing.rule ?? dispatchRuleIndividual(),
+  });
+}
+
+export async function reconcileSip(client: SipProvisionClient, input: { did: string; allowedNumbers: string[]; authUsername: string; authPassword: string; mediaEncryption: string }, apply: boolean): Promise<SipReconcileResult> {
   const trunkSpec = c0TrunkSpec(input.did, input.allowedNumbers, input.authUsername, input.authPassword, input.mediaEncryption);
   const existingTrunk = (await client.listSipInboundTrunk()).find((trunk) => trunk.name === C0_TRUNK_NAME);
-  if (!apply) return { dryRun: true, requestedTrunk: publicTrunk(trunkSpec), requestedRule: publicRule(c0RuleSpec([existingTrunk?.sipTrunkId ?? '<created-trunk-id>'], input.allowedNumbers)) };
-  let trunk: Trunk;
-  if (existingTrunk) trunk = await client.updateSipInboundTrunk(existingTrunk.sipTrunkId, { ...existingTrunk, ...trunkSpec });
+  if (!apply) {
+    const ruleSpec = c0RuleSpec([existingTrunk?.sipTrunkId ?? '<created-trunk-id>'], input.allowedNumbers);
+    return { dryRun: true, requestedTrunk: publicTrunk(trunkSpec), requestedRule: publicRule(new SIPDispatchRuleInfo({ ...ruleSpec, rule: dispatchRuleIndividual() })) };
+  }
+  let trunk: SIPInboundTrunkInfo;
+  if (existingTrunk) trunk = await client.updateSipInboundTrunk(existingTrunk.sipTrunkId, replacementTrunk(existingTrunk, trunkSpec));
   else {
     // createSipInboundTrunk exposes ringingTimeout but not maxCallDuration in
     // its 2.19.1 option type, so finish the creation with a full replacement.
-    const { maxCallDuration, ringingTimeout, ...createSpec } = trunkSpec;
+    const createSpec: CreateSipInboundTrunkOptions = {
+      allowedNumbers: trunkSpec.allowedNumbers,
+      authUsername: trunkSpec.authUsername,
+      authPassword: trunkSpec.authPassword,
+      headersToAttributes: trunkSpec.headersToAttributes,
+      media: trunkSpec.media,
+      ringingTimeout: Number(trunkSpec.ringingTimeout?.seconds),
+    };
     const created = await client.createSipInboundTrunk(C0_TRUNK_NAME, [input.did], {
       ...createSpec,
-      // SDK 2.19.1 creates Duration itself from numeric seconds; the update
-      // below receives the protobuf-shaped duration required for replacement.
-      ringingTimeout: Number(ringingTimeout.seconds),
     });
-    trunk = await client.updateSipInboundTrunk(created.sipTrunkId, { ...created, ...trunkSpec });
+    trunk = await client.updateSipInboundTrunk(created.sipTrunkId, replacementTrunk(created, trunkSpec));
   }
   const trunkId = trunk.sipTrunkId;
   assertExplicitTrunkIds([trunkId]);
   const ruleSpec = c0RuleSpec([trunkId], input.allowedNumbers);
   const existingRule = (await client.listSipDispatchRule()).find((rule) => rule.name === C0_RULE_NAME);
-  let rule: Rule;
-  if (existingRule) rule = await client.updateSipDispatchRule(existingRule.sipDispatchRuleId, { ...existingRule, ...ruleSpec });
+  let rule: SIPDispatchRuleInfo;
+  if (existingRule) rule = await client.updateSipDispatchRule(existingRule.sipDispatchRuleId, replacementRule(existingRule, ruleSpec));
   else {
     // SDK 2.19.1 creates with trunk IDs but does not expose inboundNumbers in
     // create options. Immediately replace the returned rule so the allow-list
     // is present before this reconciliation reports success.
-    const created = await client.createSipDispatchRule({ type: 'individual', roomPrefix: 'c0-' }, { name: C0_RULE_NAME, trunkIds: [trunkId], hidePhoneNumber: true, roomConfig: ruleSpec.roomConfig });
-    rule = await client.updateSipDispatchRule(created.sipDispatchRuleId, { ...created, ...ruleSpec });
+    const createRule: SipDispatchRuleIndividualInput = { type: 'individual', roomPrefix: 'c0-' };
+    const createOptions: CreateSipDispatchRuleOptions = { name: C0_RULE_NAME, trunkIds: [trunkId], hidePhoneNumber: true, roomConfig: ruleSpec.roomConfig };
+    const created = await client.createSipDispatchRule(createRule, createOptions);
+    rule = await client.updateSipDispatchRule(created.sipDispatchRuleId, replacementRule(created, ruleSpec));
   }
   assertExplicitTrunkIds(rule.trunkIds ?? []);
-  if (!(rule.inboundNumbers ?? []).every((value: string) => input.allowedNumbers.includes(value)) || rule.inboundNumbers?.length !== input.allowedNumbers.length) throw new Error('LiveKit dispatch rule did not retain the caller allow-list');
+  if (!rule.inboundNumbers.every((value) => input.allowedNumbers.includes(value)) || rule.inboundNumbers.length !== input.allowedNumbers.length) throw new Error('LiveKit dispatch rule did not retain the caller allow-list');
   return { dryRun: false, trunk: publicTrunk(trunk), rule: publicRule(rule), trunkId, ruleId: rule.sipDispatchRuleId };
 }
 

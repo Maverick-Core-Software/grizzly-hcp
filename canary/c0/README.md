@@ -2,30 +2,30 @@
 
 This directory contains a fully isolated, disabled-by-default voice canary.
 It has no production app name, no production process dependency, and no public
-listener: the agent, detector, and monitor are separate outbound-only PM2 apps.
+listener: the agent, detector, and monitor are separate outbound-only launcher-managed processes.
 Stopping all three leaves the production line untouched.
 
 ## Local preparation
 
 1. Copy `.env.c0.example` to the git-ignored `.env.c0` and have Carter provide
-   only C0-scoped values. Do not place values in the example file or PM2 config.
+   only C0-scoped values. Do not place values in the example file or launcher configuration.
 2. In each package directory (`agent`, `detector`, and `monitor`), run its
-   approved exact-version `npm install` before starting PM2.
+   approved exact-version `npm install` before starting the C0 launcher.
 3. Confirm `VOICE_C0_ENABLED=false` until the separately approved rehearsal.
 
 ## Start and stop
 
-Start only the three canary apps:
+Start only the three canary apps with the standalone launcher:
 
 ```powershell
-pm2 start canary/c0/ecosystem.c0.config.cjs --only c0-agent,c0-detector,c0-monitor
-pm2 status c0-agent c0-detector c0-monitor
+pwsh -NoProfile -File canary/c0/c0ctl.ps1 start all
+pwsh -NoProfile -File canary/c0/c0ctl.ps1 status all
 ```
 
-Stop them without touching any production PM2 app:
+Stop them without touching any production process:
 
 ```powershell
-pm2 stop c0-agent c0-detector c0-monitor
+pwsh -NoProfile -File canary/c0/c0ctl.ps1 stop all
 ```
 
 The detector polls the C0 subaccount every two seconds. It uses the local
@@ -44,7 +44,7 @@ When it is absent, the data root is `<worktree>/data/c0`, where the worktree is
 asserted by its `package.json` and `src/agent/voice` directory. Agent markers
 are therefore `<dataRoot>/answered`, `<dataRoot>/first-audio`, and
 `<dataRoot>/redirected` by parent CallSid; the outbox path is independently
-resolved against that same worktree root, never a PM2 working directory.
+resolved against that same worktree root, never a launcher working directory.
 
 ## Kill switch
 
@@ -52,16 +52,15 @@ The C0 kill switch is a **canary-number-only** Twilio configuration action:
 set that canary DID's `VoiceUrl` to the reviewed `/fallback` Function URL.
 Leave `TrunkSid` and `VoiceApplicationSid` empty so the number VoiceUrl remains
 effective. This changes no production number, production Function, production
-PM2 app, or production routing.
+process, or production routing.
 
-After the VoiceUrl change, stop the C0 apps above if an immediate local halt is
+After the VoiceUrl change, run `pwsh -NoProfile -File canary/c0/c0ctl.ps1 stop all` if an immediate local halt is
 also wanted. The Function fallback transfers to the C0 office/backup path and
 does not invoke the existing production conversation relay.
 
 ## Rollback
 
-1. Keep the canary DID on its `/fallback` VoiceUrl and stop only `c0-agent`,
-   `c0-detector`, and `c0-monitor`.
+1. Keep the canary DID on its `/fallback` VoiceUrl and run `pwsh -NoProfile -File canary/c0/c0ctl.ps1 stop all`.
 2. Preserve C0 logs and the local C0 outbox/marker state for review; do not
    replay records as part of rollback.
 3. Restore the prior reviewed canary-only VoiceUrl only after a new explicit

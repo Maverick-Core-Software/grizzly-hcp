@@ -65,6 +65,9 @@ export function maskPhone(value: string | undefined): string | undefined {
 export function redact(value: unknown, key = ''): unknown {
   if (SECRET_KEY.test(key)) return '[REDACTED]';
   if (/(sid|id)$/i.test(key) && typeof value === 'string') return mask(value);
+  // Protobuf Duration fields use bigint seconds. Evidence and CLI output must
+  // stay JSON serializable even when a provider object reaches this boundary.
+  if (typeof value === 'bigint') return Number(value);
   if (Array.isArray(value)) return value.map((item) => redact(item));
   if (value && typeof value === 'object') {
     return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([k, v]) => [k, redact(v, k)]));

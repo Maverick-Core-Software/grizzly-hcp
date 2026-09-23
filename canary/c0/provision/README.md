@@ -22,7 +22,7 @@ npx tsx canary/c0/provision/set-enabled.ts --value true
 npx tsx canary/c0/provision/set-enabled.ts --apply --value true
 ```
 
-Only `true` and `false` are accepted. Applied execution atomically replaces only `VOICE_C0_ENABLED`, emits redacted `{before, after, at}` evidence, and prints `pm2 restart c0-agent`; it never invokes PM2 itself.
+Only `true` and `false` are accepted. Applied execution atomically replaces only `VOICE_C0_ENABLED`, emits redacted `{before, after, at}` evidence, and prints `pwsh -NoProfile -File canary/c0/c0ctl.ps1 restart agent`; it never invokes PM2.
 
 ## Local verification
 

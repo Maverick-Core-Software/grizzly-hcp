@@ -10,7 +10,7 @@ async function run(): Promise<void> {
   const writer = async (values: Record<string, string>) => { writes.push(values); };
   const clock = () => new Date('2026-09-22T00:00:00.000Z');
   const dry = await setEnabled({ VOICE_C0_ENABLED: 'false' }, 'true', false, writer, clock);
-  assert.deepEqual(dry, { dryRun: true, before: 'false', after: 'true', at: '2026-09-22T00:00:00.000Z', written: [], restartCommand: 'pm2 restart c0-agent' });
+  assert.deepEqual(dry, { dryRun: true, before: 'false', after: 'true', at: '2026-09-22T00:00:00.000Z', written: [], restartCommand: 'pwsh -NoProfile -File canary/c0/c0ctl.ps1 restart agent' });
   assert.equal(writes.length, 0, 'dry run makes no write');
   await assert.rejects(() => setEnabled({}, 'yes', true, writer), /true\|false/);
   const applied = await setEnabled({ VOICE_C0_ENABLED: 'false' }, 'true', true, writer, clock);

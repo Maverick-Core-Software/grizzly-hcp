@@ -8,7 +8,7 @@ export function parseEnabled(value: string | undefined): 'true' | 'false' {
 export async function setEnabled(env: Env, value: string | undefined, apply: boolean, writeEnv: (values: Record<string, string>) => Promise<void>, now: () => Date = () => new Date()) {
   const after = parseEnabled(value); const before = env.VOICE_C0_ENABLED === 'true' || env.VOICE_C0_ENABLED === 'false' ? env.VOICE_C0_ENABLED : null;
   if (apply) await writeEnv({ VOICE_C0_ENABLED: after });
-  return { dryRun: !apply, before, after, at: now().toISOString(), written: apply ? ['VOICE_C0_ENABLED'] : [], restartCommand: 'pm2 restart c0-agent' };
+  return { dryRun: !apply, before, after, at: now().toISOString(), written: apply ? ['VOICE_C0_ENABLED'] : [], restartCommand: 'pwsh -NoProfile -File canary/c0/c0ctl.ps1 restart agent' };
 }
 
 async function main(env: Env): Promise<void> {

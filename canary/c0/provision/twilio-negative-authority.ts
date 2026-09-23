@@ -19,16 +19,21 @@ export function isProvenNonSuccess(result: ParentProbe): boolean {
 
 export async function negativeAuthority(client: AuthorityClient, subaccountSid: string, parentSid: string) {
   const [parentAccount, parentNumbers, ownNumbers] = await Promise.allSettled([
-    client.request({ method: 'GET', uri: `/2010-04-01/Accounts/${parentSid}.json` }),
-    client.request({ method: 'GET', uri: `/2010-04-01/Accounts/${parentSid}/IncomingPhoneNumbers.json` }),
-    client.api.v2010.accounts(subaccountSid).incomingPhoneNumbers.list({ limit: 1 }),
+    Promise.resolve().then(() => client.request({ method: 'GET', uri: `https://api.twilio.com/2010-04-01/Accounts/${parentSid}.json` })),
+    Promise.resolve().then(() => client.request({ method: 'GET', uri: `https://api.twilio.com/2010-04-01/Accounts/${parentSid}/IncomingPhoneNumbers.json` })),
+    Promise.resolve().then(() => client.api.v2010.accounts(subaccountSid).incomingPhoneNumbers.list({ limit: 1 })),
   ]);
   const parentAccountStatus = probeStatus(parentAccount);
   const parentNumbersStatus = probeStatus(parentNumbers);
   const parentAccountDenied = isProvenNonSuccess(parentAccount);
   const parentNumbersDenied = isProvenNonSuccess(parentNumbers);
   const pass = parentAccountDenied && parentNumbersDenied && ownNumbers.status === 'fulfilled';
-  return { pass, parentAccountDenied, parentNumbersDenied, parentAccountStatus, parentNumbersStatus, ownSubaccountPositiveControl: ownNumbers.status === 'fulfilled' };
+  const inconclusiveReasons = [
+    ...(parentAccountDenied ? [] : ['parent-account-probe-inconclusive']),
+    ...(parentNumbersDenied ? [] : ['parent-number-list-probe-inconclusive']),
+    ...(ownNumbers.status === 'fulfilled' ? [] : ['subaccount-positive-control-inconclusive']),
+  ];
+  return { pass, parentAccountDenied, parentNumbersDenied, parentAccountStatus, parentNumbersStatus, ownSubaccountPositiveControl: ownNumbers.status === 'fulfilled', inconclusiveReasons };
 }
 
 async function main(env: Env): Promise<void> {

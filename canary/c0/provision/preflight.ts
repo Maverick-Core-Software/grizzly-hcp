@@ -34,8 +34,8 @@ export function validateCanonical(name: string, value: string | undefined): bool
     case 'VOICE_C0_LIVEKIT_API_KEY': return /^API[A-Za-z\d_-]{8,}$/.test(value);
     case 'VOICE_C0_LIVEKIT_API_SECRET': return /^[A-Za-z\d_-]{24,}$/.test(value);
     case 'VOICE_C0_LIVEKIT_SIP_HOST': return /^[a-z\d](?:[a-z\d.-]*[a-z\d])?(?::\d{1,5})?$/i.test(value);
-    case 'VOICE_C0_LIVEKIT_TRUNK_ID': return /^ST[a-f\d]{32}$/i.test(value);
-    case 'VOICE_C0_LIVEKIT_RULE_ID': return /^SD[a-f\d]{32}$/i.test(value);
+    case 'VOICE_C0_LIVEKIT_TRUNK_ID': return /^ST_[A-Za-z0-9]{6,64}$/.test(value);
+    case 'VOICE_C0_LIVEKIT_RULE_ID': return /^SDR_[A-Za-z0-9]{6,64}$/.test(value);
     case 'VOICE_C0_LIVEKIT_MEDIA_ENCRYPTION': return ['SIP_MEDIA_ENCRYPT_ALLOW', 'SIP_MEDIA_ENCRYPT_REQUIRE', 'SIP_MEDIA_ENCRYPT_DISABLE'].includes(value);
     case 'VOICE_C0_SIP_USERNAME': return /^c0-[a-f\d]{24}$/i.test(value);
     case 'VOICE_C0_SIP_PASSWORD': return /^[A-Za-z\d_-]{40,}$/.test(value);
