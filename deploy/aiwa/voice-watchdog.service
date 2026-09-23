@@ -1,0 +1,16 @@
+[Unit]
+Description=Grizzly Voice Line Watchdog — detects missed inbound calls and Funnel public-path failures
+After=network.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/grizzly-hcp
+Environment=TZ=America/Chicago
+EnvironmentFile=/opt/grizzly-hcp/.env
+ExecStart=/usr/bin/node /opt/grizzly-hcp/node_modules/tsx/dist/cli.mjs src/ops/voice-watchdog.ts
+SyslogIdentifier=voice-watchdog
+TimeoutStartSec=90
+# The application has its own 70-second deadline, leaving systemd margin to persist state.
+
+# No [Install] section on purpose — the timer is what gets enabled, not the service.

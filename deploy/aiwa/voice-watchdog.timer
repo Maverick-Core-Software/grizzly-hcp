@@ -1,0 +1,12 @@
+[Unit]
+Description=Two-minute timer for the Grizzly voice line watchdog
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=2min
+AccuracySec=10s
+Persistent=true
+Unit=voice-watchdog.service
+
+[Install]
+WantedBy=timers.target
