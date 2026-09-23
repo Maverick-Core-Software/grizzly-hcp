@@ -1,0 +1,8 @@
+.env.c0
+node_modules/
+*.log
+data/
+state/
+first-audio/
+answered/
+redirected/

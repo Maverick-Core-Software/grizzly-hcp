@@ -1,0 +1,15 @@
+{
+  "name": "grizzly-c0-twilio-functions",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Isolated C0 Twilio Function handlers",
+  "scripts": {
+    "check": "npx tsx functions/c0-functions.check.ts"
+  },
+  "dependencies": {
+    "twilio": "6.0.2"
+  },
+  "devDependencies": {
+    "tsx": "4.23.15"
+  }
+}
