@@ -5,7 +5,7 @@
 import assert from 'node:assert/strict';
 import {
   classifyFailedCall, countIngressDrops, createPublicDnsResolve, redactPhoneNumbers,
-  parseVoiceWatchdogArgs, runVoiceWatchdog, type AddressProbe, type VoiceWatchdogDeps, type WatchdogFs,
+  deliverWatchdogAlert, parseVoiceWatchdogArgs, runVoiceWatchdog, type AddressProbe, type VoiceWatchdogDeps, type WatchdogFs,
 } from './voice-watchdog.js';
 
 type MemoryFiles = Map<string, string>;
@@ -54,7 +54,10 @@ function baseDeps(files: MemoryFiles, options: {
             : { calls: options.calls ?? [] },
       } as Response;
     }) as typeof fetch,
-    resolvePublic: async () => options.addresses ?? [{ address: '203.0.113.10', family: 4 }],
+    resolvePublic: async () => ({
+      addresses: options.addresses ?? [{ address: '203.0.113.10', family: 4 }],
+      dns: { '1.1.1.1': { A: 'ok', AAAA: 'ok' }, '8.8.8.8': { A: 'ok', AAAA: 'ok' } },
+    }),
     probeAddress: async (_url, address) => { probeFamilies.push(address.family); return options.probe ?? { twiml: { ok: true }, websocket: { ok: true } }; },
     now: () => now, fs: (() => {
       const fs = memoryFs(files);
@@ -63,7 +66,7 @@ function baseDeps(files: MemoryFiles, options: {
     exec: async (command, args) => { commands.push(`${command} ${args.join(' ')}`); return { stdout: options.journal ?? '' }; },
     deliverAlert: async (title, body) => {
       alertBodies.push(`${title}\n${body}`);
-      return { delivered: true, sms: 'sent', ntfy: 'not-configured' };
+      return { delivered: true, slack: 'not-configured', sms: 'sent', ntfy: 'not-configured' };
     }, log: () => {},
   };
   return { deps, alertBodies, fetchUrls, probeFamilies, commands, writes };
@@ -160,19 +163,50 @@ assert.equal(classifyFailedCall({ status: 'in-progress', duration: '0' }), false
   assert.ok(test.fetchUrls.some((url) => url.includes('/Calls/CA-off-window.json')), 'missing resource call must be fetched by CallSid');
 }
 
-// The public resolver explicitly uses public DNS and resolves both A and AAAA, not MagicDNS/system DNS.
+// Each public DNS server is queried independently, so NXDOMAIN from one cannot hide the other's answer.
 {
-  let servers: string[] = [];
+  const servers: string[] = [];
   const calls: string[] = [];
-  const resolve = createPublicDnsResolve(() => ({
-    setServers: (value: string[]) => { servers = value; },
-    resolve4: async (host: string) => { calls.push(`A:${host}`); return ['203.0.113.10']; },
-    resolve6: async (host: string) => { calls.push(`AAAA:${host}`); return ['2001:db8::10']; },
-    cancel: () => {},
-  }));
-  assert.deepEqual(await resolve('voice.example.test'), [{ address: '203.0.113.10', family: 4 }, { address: '2001:db8::10', family: 6 }]);
-  assert.deepEqual(servers, ['1.1.1.1', '8.8.8.8']);
-  assert.deepEqual(calls, ['A:voice.example.test', 'AAAA:voice.example.test']);
+  const resolve = createPublicDnsResolve(() => {
+    let server = '';
+    return {
+      setServers: (value: string[]) => { server = value[0]; servers.push(server); },
+      resolve4: async (host: string) => {
+        calls.push(`${server}:A:${host}`);
+        if (server === '1.1.1.1') throw Object.assign(new Error('NXDOMAIN'), { code: 'NXDOMAIN' });
+        return ['203.0.113.10'];
+      },
+      resolve6: async (host: string) => { calls.push(`${server}:AAAA:${host}`); return ['2001:db8::10']; },
+      cancel: () => {},
+    };
+  });
+  const result = await resolve('voice.example.test');
+  assert.deepEqual(result.addresses, [{ address: '203.0.113.10', family: 4 }, { address: '2001:db8::10', family: 6 }]);
+  assert.deepEqual(servers.sort(), ['1.1.1.1', '1.1.1.1', '8.8.8.8', '8.8.8.8']);
+  assert.equal(calls.filter((call) => call.includes(':A:')).length, 2);
+  assert.equal(result.dns['1.1.1.1'].A, 'NXDOMAIN');
+  assert.equal(result.dns['8.8.8.8'].A, 'ok');
+}
+
+// The second public resolver's A record makes the watchdog probe healthy despite the first NXDOMAIN.
+{
+  const files: MemoryFiles = new Map();
+  const test = baseDeps(files);
+  test.deps.resolvePublic = createPublicDnsResolve(() => {
+    let server = '';
+    return {
+      setServers: (value: string[]) => { server = value[0]; },
+      resolve4: async () => {
+        if (server === '1.1.1.1') throw Object.assign(new Error('NXDOMAIN'), { code: 'NXDOMAIN' });
+        return ['203.0.113.10'];
+      },
+      resolve6: async () => [], cancel: () => {},
+    };
+  });
+  const result = await runVoiceWatchdog(test.deps);
+  assert.equal(result.sources.probe, 'ok');
+  assert.equal(result.dns['1.1.1.1'].A, 'NXDOMAIN');
+  assert.equal(result.dns['8.8.8.8'].A, 'ok');
 }
 
 // Every resolved address, including IPv6, gets a separate injected HTTPS + WS probe.
@@ -224,6 +258,8 @@ assert.equal(redactPhoneNumbers('caller +1 (469) 555-0123 and 469-555-0456'), 'c
   assert.equal(result.dryRunSummary?.failuresFound[0]?.callSidMasked, 'CA***yrun');
   assert.equal(result.dryRunSummary?.drops, 1);
   assert.deepEqual(result.dryRunSummary?.wouldAlert, ['Voice line: missed call']);
+  assert.equal(result.dryRunSummary?.sources.probe, 'ok');
+  assert.equal(result.dryRunSummary?.dns['1.1.1.1'].A, 'ok');
 }
 
 // --since is an explicit dry-run watermark override, never a normal-run setting.
@@ -276,7 +312,7 @@ assert.equal(redactPhoneNumbers('caller +1 (469) 555-0123 and 469-555-0456'), 'c
   assert.equal(test.alertBodies.length, 0, 'partial Twilio data must not create a callback alert');
 }
 
-// AIWA without IPv6 egress records the address as untestable and does not open a public-path incident.
+// IPv6 remains untestable when an IPv4 public probe verifies the voice path.
 {
   const files: MemoryFiles = new Map();
   const first = baseDeps(files, { addresses: [{ address: '203.0.113.10', family: 4 }, { address: '2001:db8::10', family: 6 }] });
@@ -289,6 +325,38 @@ assert.equal(redactPhoneNumbers('caller +1 (469) 555-0123 and 469-555-0456'), 'c
   second.deps.probeAddress = first.deps.probeAddress;
   await runVoiceWatchdog(second.deps);
   assert.equal(second.alertBodies.some((body) => body.startsWith('Voice line: public path failing')), false);
+}
+
+// With no A record and only unreachable IPv6, the source is unverified and alerts after two runs.
+{
+  const files: MemoryFiles = new Map();
+  const options = { addresses: [{ address: '2001:db8::10', family: 6 as const }] };
+  const first = baseDeps(files, options);
+  first.deps.probeAddress = async () => ({ twiml: { ok: false, detail: 'ENETUNREACH' }, websocket: { ok: false, detail: 'ENETUNREACH' } });
+  const firstResult = await runVoiceWatchdog(first.deps);
+  assert.equal(firstResult.sources.probe, 'unverified');
+  const second = baseDeps(files, options);
+  second.deps.probeAddress = first.deps.probeAddress;
+  await runVoiceWatchdog(second.deps);
+  assert.match(second.alertBodies[0], /no testable public address — IPv4 A records missing or unreachable/);
+}
+
+// A total public DNS failure is an alertable path failure, not an empty successful probe.
+{
+  const resolver = createPublicDnsResolve(() => ({
+    setServers: () => {},
+    resolve4: async () => { throw Object.assign(new Error('NXDOMAIN'), { code: 'NXDOMAIN' }); },
+    resolve6: async () => { throw Object.assign(new Error('NODATA'), { code: 'NODATA' }); },
+    cancel: () => {},
+  }));
+  const files: MemoryFiles = new Map();
+  const first = baseDeps(files); first.deps.resolvePublic = resolver;
+  const firstResult = await runVoiceWatchdog(first.deps);
+  assert.equal(firstResult.sources.probe, 'unverified');
+  const second = baseDeps(files); second.deps.resolvePublic = resolver;
+  await runVoiceWatchdog(second.deps);
+  assert.match(second.alertBodies[0], /public DNS returned no records/);
+  assert.equal(second.alertBodies.filter((body) => body.startsWith('Voice line: public path failing')).length, 1);
 }
 
 // Journal collection failure is visible as unavailable, never a fabricated zero-drop count.
@@ -330,8 +398,8 @@ assert.equal(redactPhoneNumbers('caller +1 (469) 555-0123 and 469-555-0456'), 'c
     firstRun.alertBodies.push(`${title}\n${body}`);
     attempts += 1;
     return attempts === 1
-      ? { delivered: true, sms: 'sent', ntfy: 'failed' }
-      : { delivered: false, sms: 'failed', ntfy: 'failed' };
+      ? { delivered: true, slack: 'not-configured', sms: 'sent', ntfy: 'failed' }
+      : { delivered: false, slack: 'not-configured', sms: 'failed', ntfy: 'failed' };
   };
   const failed = await runVoiceWatchdog(firstRun.deps);
   assert.equal(failed.exitCode, 1, 'both-channel delivery failure must fail the run');
@@ -342,12 +410,112 @@ assert.equal(redactPhoneNumbers('caller +1 (469) 555-0123 and 469-555-0456'), 'c
   retryRun.deps.now = () => new Date(now.getTime() + 2 * 60_000);
   retryRun.deps.deliverAlert = async (title, body) => {
     retryRun.alertBodies.push(`${title}\n${body}`);
-    return { delivered: true, sms: 'failed', ntfy: 'sent' };
+    return { delivered: true, slack: 'not-configured', sms: 'failed', ntfy: 'sent' };
   };
   await runVoiceWatchdog(retryRun.deps);
   assert.equal(retryRun.alertBodies.length, 1);
   assert.match(retryRun.alertBodies[0], /50222/);
   assert.doesNotMatch(retryRun.alertBodies[0], /50111/);
+}
+
+// Slack accepts only an HTTP 2xx response with {ok:true}, and then suppresses SMS fallback.
+{
+  const requests: Array<{ url: string; init: RequestInit | undefined }> = [];
+  const result = await deliverWatchdogAlert('Voice line: missed call', 'Caller: +14695550123', undefined, {
+    env: { VOICE_WATCHDOG_SLACK_TOKEN: 'xoxb-test-token', VOICE_WATCHDOG_SLACK_CHANNEL: 'C-test' },
+    fetchImpl: (async (url, init) => {
+      requests.push({ url: String(url), init });
+      return { ok: true, status: 200, json: async () => ({ ok: true }) } as Response;
+    }) as typeof fetch,
+  });
+  assert.equal(result.delivered, true);
+  assert.equal(result.slack, 'accepted');
+  assert.equal(requests.length, 1, 'accepted Slack must suppress SMS fallback');
+  assert.equal(requests[0].url, 'https://slack.com/api/chat.postMessage');
+  assert.deepEqual(JSON.parse(String(requests[0].init?.body)), { channel: 'C-test', text: '*Voice line: missed call*\nCaller: +14695550123', unfurl_links: false, unfurl_media: false });
+}
+
+// Slack API-level failure falls back to the existing SMS sender and can still deliver the incident.
+{
+  const urls: string[] = [];
+  const result = await deliverWatchdogAlert('T', 'B', undefined, {
+    env: { VOICE_WATCHDOG_SLACK_TOKEN: 'xoxb-test-token', OPS_TWILIO_ACCOUNT_SID: 'ACtest', OPS_TWILIO_AUTH_TOKEN: 'token', OPS_SMS_FROM: '+15551112222', OPS_SMS_TO: '+15553334444' },
+    fetchImpl: (async (url) => {
+      urls.push(String(url));
+      return String(url).includes('slack.com')
+        ? { ok: true, status: 200, json: async () => ({ ok: false, error: 'not_in_channel' }) } as Response
+        : { ok: true, status: 201 } as Response;
+    }) as typeof fetch,
+  });
+  assert.equal(result.slack, 'failed:not_in_channel');
+  assert.equal(result.sms, 'sent');
+  assert.equal(result.delivered, true);
+  assert.equal(urls.length, 2);
+}
+
+// A failed Slack and SMS attempt keeps the incident on its existing retry path and redacts tokens everywhere persisted.
+{
+  const token = 'xoxb-secret-token';
+  const delivery = await deliverWatchdogAlert('T', 'B', undefined, {
+    env: { VOICE_WATCHDOG_SLACK_TOKEN: token, OPS_TWILIO_ACCOUNT_SID: 'ACtest', OPS_TWILIO_AUTH_TOKEN: 'token', OPS_SMS_FROM: '+15551112222', OPS_SMS_TO: '+15553334444' },
+    fetchImpl: (async (url) => String(url).includes('slack.com')
+      ? { ok: true, status: 200, json: async () => ({ ok: false, error: token }) } as Response
+      : { ok: false, status: 503 } as Response) as typeof fetch,
+  });
+  assert.equal(delivery.delivered, false);
+  assert.doesNotMatch(JSON.stringify(delivery), /xoxb-secret-token/);
+  const files: MemoryFiles = new Map();
+  const logs: string[] = [];
+  const test = baseDeps(files, { calls: [call('CA-slack-retry')] });
+  test.deps.deliverAlert = async () => delivery;
+  test.deps.log = (message) => { logs.push(message); };
+  const result = await runVoiceWatchdog(test.deps);
+  assert.equal(result.state.retryRecords.length, 1);
+  assert.doesNotMatch(`${logs.join('\n')}\n${[...files.values()].join('\n')}`, /xoxb-secret-token/);
+}
+
+// Without watchdog Slack configuration, delivery follows the existing SMS path.
+{
+  const urls: string[] = [];
+  const result = await deliverWatchdogAlert('T', 'B', undefined, {
+    env: { OPS_TWILIO_ACCOUNT_SID: 'ACtest', OPS_TWILIO_AUTH_TOKEN: 'token', OPS_SMS_FROM: '+15551112222', OPS_SMS_TO: '+15553334444' },
+    fetchImpl: (async (url) => { urls.push(String(url)); return { ok: true, status: 201 } as Response; }) as typeof fetch,
+  });
+  assert.equal(result.slack, 'not-configured');
+  assert.equal(result.sms, 'sent');
+  assert.equal(urls.length, 1);
+  assert.match(urls[0], /Messages\.json/);
+}
+
+// Dry run does not invoke the delivery adapter, including its Slack path.
+{
+  const files: MemoryFiles = new Map();
+  const test = baseDeps(files, { calls: [call('CA-slack-dry')] });
+  let slackCalls = 0;
+  test.deps.deliverAlert = async () => { slackCalls += 1; return { delivered: true, slack: 'accepted', sms: 'not-configured', ntfy: 'not-configured' }; };
+  await runVoiceWatchdog(test.deps, { dryRun: true });
+  assert.equal(slackCalls, 0);
+}
+
+// A 101-incident outage leaves 100 bounded retries and explicitly gives up the overflow record.
+{
+  const files: MemoryFiles = new Map();
+  const calls = Array.from({ length: 101 }, (_, index) => call(`CA-cap-${index}`, `+1469555${String(index).padStart(4, '0')}`));
+  const logs: string[] = [];
+  const first = baseDeps(files, { calls });
+  first.deps.log = (message) => { logs.push(message); };
+  first.deps.deliverAlert = async () => ({ delivered: false, slack: 'failed:network', sms: 'failed', ntfy: 'failed' });
+  const failed = await runVoiceWatchdog(first.deps);
+  assert.equal(failed.state.retryRecords.length, 100);
+  assert.equal(failed.state.undeliverableIncidentKeys.length, 1);
+  assert.equal(failed.state.retryRecords.length + failed.state.undeliverableIncidentKeys.length, 101);
+  assert.match(logs.join('\n'), /alert retry capacity overflow count=1/);
+  const retry = baseDeps(files, { calls });
+  retry.deps.now = () => new Date(now.getTime() + 2 * 60_000);
+  retry.deps.deliverAlert = async (title, body) => { retry.alertBodies.push(`${title}\n${body}`); return { delivered: false, slack: 'failed:network', sms: 'failed', ntfy: 'failed' }; };
+  await runVoiceWatchdog(retry.deps);
+  assert.equal(retry.alertBodies.length, 100, 'only retained records retry; the overflow incident is given up');
+  assert.doesNotMatch(retry.alertBodies.join('\n'), /55550000/);
 }
 
 // A response body that never settles is cancelled by the deadline, not left as a leaked handle.
@@ -387,7 +555,7 @@ assert.equal(redactPhoneNumbers('caller +1 (469) 555-0123 and 469-555-0456'), 'c
   const result = await runVoiceWatchdog(test.deps);
   assert.equal(result.deadlineHit, true);
   assert.equal(result.exitCode, 1);
-  assert.equal(cancels, 1, 'deadline must call Resolver.cancel()');
+  assert.equal(cancels, 4, 'deadline must cancel every per-resolver, per-family query');
 }
 
 // The global deadline is an operational failure even when no individual source has returned.

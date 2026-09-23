@@ -403,3 +403,125 @@ unusually high-volume/outage conditions can be considered fully safe.
   only for the four pre-existing errors outside the watchdog files; filtering for
   `src/ops/voice-watchdog.ts` and `src/ops/voice-watchdog.check.ts` produced zero
   errors.
+
+## Change (VW6 Slack)
+
+The watchdog now has its own Slack configuration: `VOICE_WATCHDOG_SLACK_TOKEN`
+and `VOICE_WATCHDOG_SLACK_CHANNEL` (default `C0BV3678T9N`, private
+`#ops-alerts`). It posts the existing alert content as `*title*` plus the body,
+caps it at 3000 characters, and accepts a Slack delivery only when both the HTTP
+status and JSON `ok` result succeed; failed or unconfigured Slack falls back to
+the existing SMS and ntfy paths. The local delivery adapter keeps the operation
+abort controller through Slack body consumption, records an `accepted`,
+`not-configured`, or redacted `failed:<code>` Slack status in `lastDelivery`, and
+does not read the retired `SLACK_BOT_TOKEN` or `SLACK_CHANNEL_ID` variables.
+
+## Fix response (VW6)
+
+| Finding / change | Implementation | Offline coverage |
+| --- | --- | --- |
+| MEDIUM — retry-cap overflow silently lost an undelivered incident | Before the 100-record retry cap is applied, every discarded record is marked given-up and seen, contributes to `undeliverableAlerts`, and produces a redacted capacity warning. | A 101-incident all-channel failure retains 100 retries, gives up exactly one overflow incident, and proves only the retained 100 are retried. |
+| Slack-primary delivery | Slack `chat.postMessage` is tried first with the watchdog-only token/channel, strict HTTP-plus-JSON acceptance, 3000-character formatting, and token-redacted failure text. SMS and ntfy run only when Slack does not accept. | Fixtures cover Slack success without SMS, HTTP 200 `ok:false` with SMS fallback, dual failure retaining retry state, absent Slack retaining SMS, token absence from state/heartbeat/log capture, and dry run invoking no Slack delivery. |
+| Public DNS NXDOMAIN blind spot | Cloudflare and Google now use independent resolvers for each A/AAAA query; their answers are unioned and recorded in heartbeat/dry-run `dns`. | The first-resolver NXDOMAIN plus second-resolver A-answer fixture proves the usable address is retained and the probe is `ok`. |
+| Empty or untestable public path looked healthy | No DNS records and no usable IPv4 verification increment the path-failure counter and issue the normal alert after two runs; `sources.probe` becomes `unverified` when there is no testable address. Recovery requires a successful IPv4 TwiML and WebSocket probe. | Fixtures cover two total-DNS-failure runs with one alert, only-AAAA/unreachable-IPv6 with one alert, and `sources`/`dns` in dry-run output. |
+
+## Re-review (VW6)
+
+**VERDICT: ACCEPT-WITH-FIXES**
+
+VW6 resolves the prior retry-overflow loss and correctly adds watchdog-local,
+strictly accepted Slack delivery with SMS/ntfy fallback, redacted status, and no
+change to the shared alert adapter.  The independent DNS union removes the
+Cloudflare-NXDOMAIN blind spot, but the production resolver set has only one
+known working A-record source on AIWA; a short Google resolver outage can
+therefore create a false public-path outage despite the known-good Quad9 and
+OpenDNS answers.  There are **0 open HIGH/BLOCKER findings**; the remaining
+MEDIUM should be remediated before this now-live detector is relied on as a
+high-confidence public-path signal.
+
+### Prior open finding
+
+1. **MEDIUM — retry-cap overflow silently dropped an undelivered missed-call incident: RESOLVED.**
+   `src/ops/voice-watchdog.ts:811-821` explicitly marks records displaced by
+   the 100-entry retry cap as given-up, persists their incident and leg dedupe
+   identifiers, and emits only a masked capacity warning.  The 101-incident
+   fixture at `src/ops/voice-watchdog.check.ts:500-518` passes: it retains 100
+   retry records, counts exactly one undeliverable incident, and proves only
+   the retained records are retried.
+
+### VW6 implementation and regression evidence
+
+- **Slack delivery: RESOLVED/implemented as specified.**
+  `src/ops/voice-watchdog.ts:307-386` reads only
+  `VOICE_WATCHDOG_SLACK_TOKEN` and `VOICE_WATCHDOG_SLACK_CHANNEL` (default
+  `C0BV3678T9N`), accepts `chat.postMessage` only on both HTTP success and
+  JSON `ok: true`, and keeps its abort controller through `response.json()`.
+  Any Slack rejection—including an API-level `not_in_channel` response—falls
+  through to the signal-injected SMS and ntfy sends; an accepted Slack send
+  suppresses those fallbacks.  `lastDelivery` retains statuses only, and the
+  `xox*` error redactor is applied before a Slack error can enter state or a
+  heartbeat.  Fixtures at `src/ops/voice-watchdog.check.ts:421-497` cover
+  accepted-Slack suppression, API rejection plus SMS fallback, redaction and
+  retry retention, unconfigured-Slack SMS use, and dry-run non-delivery.
+
+- **Independent public DNS and failure semantics: PARTIALLY RESOLVED.**
+  `createPublicDnsResolve` now creates a resolver for each server/family and
+  unions answers at `src/ops/voice-watchdog.ts:556-605`; the first-resolver
+  NXDOMAIN/second-resolver-A fixture at
+  `src/ops/voice-watchdog.check.ts:166-210` passes.  Empty results and no
+  usable IPv4 now become `unverified`, increment the ordinary two-run
+  public-path counter, and require a healthy IPv4 for recovery at
+  `src/ops/voice-watchdog.ts:823-855`; fixtures at `:315-360` pass.  A single
+  transient failure does not alert while the other configured resolver returns
+  an A record, and the open-state guard prevents a delivered outage alert from
+  being repeated every two minutes.
+
+- **Previously resolved safety boundaries: no regression found.**
+  The run still has the 70-second deadline under `TimeoutStartSec=90`, writes
+  only beneath the fixed `data/` path, has no process-control path, and its
+  WebSocket test only upgrades then destroys the socket without relay traffic
+  (`src/ops/voice-watchdog.ts:19-20, 632-647, 887-948`;
+  `deploy/aiwa/voice-watchdog.service:5-16`).  The overlap watermark,
+  PageSize-1000 pagination, complete-only watermark advance, Monitor
+  `resource_sid` handling, bounded state, IPv6 `untestable` classification,
+  journal-unavailable result, dry-run non-write/non-send behavior, per-source
+  heartbeat, service/timer topology, and runbook all remain consistent.
+  `src/ops/alert.ts` hashes to the required unchanged SHA-256
+  `D1E4ED8CCC0BEA0EA4B7347C9B4E7D89F99F88DEFC82205CC049764677D05A1C`.
+
+### New findings
+
+#### MEDIUM — a known-bad Cloudflare resolver leaves Google as the sole effective IPv4 source
+
+- **File:** `src/ops/voice-watchdog.ts:560-605, 823-855`
+- **Scenario:** AIWA has already demonstrated that `1.1.1.1` returns NXDOMAIN
+  for this Funnel host, while `8.8.8.8`, `9.9.9.9`, and OpenDNS return the A
+  record.  VW6 queries only Cloudflare and Google.  Thus, if Google has a
+  transient resolver/connectivity failure on two consecutive timer runs, both
+  configured sources yield no A record; the watchdog records `unverified` and
+  sends a false `public path failing` alert even though Quad9/OpenDNS could
+  still verify the healthy Funnel address.  The alert-open state avoids a
+  message every two minutes after delivery, but this is still an avoidable
+  live-host false incident and recovery remains dependent on Google answering
+  again.
+- **Fix:** Query at least the known-good `9.9.9.9` and `208.67.222.222`
+  independently per A/AAAA family as well (or replace the known-NXDOMAIN
+  server with two independently verified good resolvers).  Retain the current
+  union and all-resolvers-empty rule, and add a fixture where Cloudflare is
+  NXDOMAIN and Google fails but Quad9/OpenDNS supplies the A record; it must
+  remain `sources.probe: ok` and not increment the public-outage counter.
+
+### Release-hygiene observation (non-verdict)
+
+`src/ops/voice-watchdog.check.ts:458-474` contains the static fixture literal
+`xoxb-secret-token`.  It is not a credential and does not alter runtime
+behavior, but it can resemble a Slack token to generic push-protection rules.
+Construct the fixture and its assertion pattern at runtime (for example, join
+the token segments) before committing if the repository's push protection
+flags it; this is not counted as a production defect.
+
+### Checks run
+
+- `D:\\Workspace\\Active\\grizzly-hcp\\node_modules\\.bin\\tsx.cmd src/ops/voice-watchdog.check.ts` — passed (`voice watchdog self-check passed`).
+- `D:\\Workspace\\Active\\grizzly-hcp\\node_modules\\.bin\\tsx.cmd src/ops/alert.check.ts` — passed (`ops alert self-check passed`).
+- `D:\\Workspace\\Active\\grizzly-hcp\\node_modules\\.bin\\tsc.cmd --noEmit`, filtered for `src/ops/voice-watchdog.ts` and `src/ops/voice-watchdog.check.ts` — zero matching errors.  The command exits 2 only for four pre-existing errors in `src/automations/estimates/from-proposal.ts` and `src/hcp/mine-pricebook-candidates.ts` outside this review surface.

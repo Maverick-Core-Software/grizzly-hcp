@@ -30,8 +30,10 @@ const DROP_PATTERN = /Drop: TCP\{\[fd7a:[^\]]+\]:\d+ > \[[^\]]+\]:\d+\} \d+ no r
 export type ResolvedAddress = { address: string; family: 4 | 6 };
 export type ProbeResult = { ok: boolean; detail?: string };
 export type AddressProbe = { twiml: ProbeResult; websocket: ProbeResult };
-export type SourceStatus = 'ok' | 'failed' | 'unavailable' | 'incomplete';
+export type SourceStatus = 'ok' | 'failed' | 'unavailable' | 'incomplete' | 'unverified';
 export type ProbeStatus = 'ok' | 'failed' | 'untestable';
+export type PublicDnsStatus = Record<string, { A: string; AAAA: string }>;
+export type PublicDnsResult = { addresses: ResolvedAddress[]; dns: PublicDnsStatus };
 
 export type VoiceWatchdogState = {
   lastRunAt?: string;
@@ -63,7 +65,7 @@ export type WatchdogFs = {
 export type VoiceWatchdogDeps = {
   config: VoiceWatchdogConfig;
   fetchImpl: typeof fetch;
-  resolvePublic: (host: string, signal?: AbortSignal) => Promise<ResolvedAddress[]>;
+  resolvePublic: (host: string, signal?: AbortSignal) => Promise<PublicDnsResult>;
   probeAddress: (voiceUrl: URL, address: ResolvedAddress, signal?: AbortSignal) => Promise<AddressProbe>;
   now: () => Date;
   fs: WatchdogFs;
@@ -87,6 +89,7 @@ export type WatchdogRunResult = {
   unattributedAlerts: Array<{ errorCode: number; alertSidMasked: string }>;
   undeliverableAlerts: number;
   lastDelivery: AlertDeliveryStatus | null;
+  dns: PublicDnsStatus;
   dryRunSummary?: VoiceWatchdogDryRunSummary;
 };
 
@@ -97,6 +100,8 @@ export type VoiceWatchdogDryRunSummary = {
   wouldAlert: string[];
   probe: Record<string, { twiml: boolean; ws: boolean }>;
   drops: number | null;
+  sources: WatchdogRunResult['sources'];
+  dns: PublicDnsStatus;
 };
 
 export type VoiceWatchdogRunOptions = {
@@ -150,6 +155,7 @@ type RetryRecord = {
 
 export type AlertDeliveryStatus = {
   delivered: boolean;
+  slack: 'accepted' | 'not-configured' | `failed:${string}`;
   sms: 'sent' | 'failed' | 'not-configured';
   ntfy: 'sent' | 'failed' | 'not-configured';
 };
@@ -299,15 +305,32 @@ function basicAuth(accountSid: string, authToken: string): string {
  * sendOpsAlert: it deliberately swallows per-channel failures for other callers.
  */
 export async function deliverWatchdogAlert(
-  title: string, body: string, signal?: AbortSignal, fetchImpl: typeof fetch = fetch,
+  title: string,
+  body: string,
+  signal?: AbortSignal,
+  options: { fetchImpl?: typeof fetch; env?: NodeJS.ProcessEnv } = {},
 ): Promise<AlertDeliveryStatus> {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const env = options.env ?? process.env;
   const channelFetch: typeof fetch = (input, init) => fetchImpl(input, { ...init, signal });
-  const topic = process.env.OPS_NTFY_TOPIC || process.env.NTFY_TOPIC || '';
-  const sms = await sendOpsSms(formatOpsSms(title, body), { fetchImpl: channelFetch });
+  const slackToken = env.VOICE_WATCHDOG_SLACK_TOKEN || '';
+  const slackChannel = env.VOICE_WATCHDOG_SLACK_CHANNEL || 'C0BV3678T9N';
+  let slack: AlertDeliveryStatus['slack'] = 'not-configured';
+  if (slackToken) {
+    try {
+      slack = await postSlackAlert(title, body, slackToken, slackChannel, signal, fetchImpl);
+    } catch (error) {
+      slack = `failed:${redactSlackError(error)}`;
+    }
+  }
+  if (slack === 'accepted') return { delivered: true, slack, sms: 'not-configured', ntfy: 'not-configured' };
+
+  const topic = env.OPS_NTFY_TOPIC || env.NTFY_TOPIC || '';
+  const sms = await sendOpsSms(formatOpsSms(title, body), { fetchImpl: channelFetch, env });
   let ntfy: AlertDeliveryStatus['ntfy'] = 'not-configured';
   if (topic) {
     try {
-      const response: Response = await channelFetch(`${process.env.NTFY_URL || 'https://ntfy.sh'}/${topic}`, {
+      const response: Response = await channelFetch(`${env.NTFY_URL || 'https://ntfy.sh'}/${topic}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'text/plain',
@@ -323,7 +346,43 @@ export async function deliverWatchdogAlert(
     }
   }
   const smsStatus: AlertDeliveryStatus['sms'] = sms.sent ? 'sent' : sms.reason === 'not-configured' ? 'not-configured' : 'failed';
-  return { delivered: smsStatus === 'sent' || ntfy === 'sent', sms: smsStatus, ntfy };
+  return { delivered: smsStatus === 'sent' || ntfy === 'sent', slack, sms: smsStatus, ntfy };
+}
+
+const SLACK_TOKEN_PATTERN = /xox[a-z]-[A-Za-z0-9-]+/gi;
+
+function redactSlackError(error: unknown): string {
+  const value = error instanceof Error ? error.message : String(error ?? 'unknown');
+  return value.replace(SLACK_TOKEN_PATTERN, '[redacted]').replace(/\s+/g, ' ').trim().slice(0, 120) || 'unknown';
+}
+
+async function postSlackAlert(
+  title: string, body: string, token: string, channel: string, operationSignal: AbortSignal | undefined, fetchImpl: typeof fetch,
+): Promise<AlertDeliveryStatus['slack']> {
+  const controller = new AbortController();
+  let response: Response | undefined;
+  const abort = (): void => {
+    controller.abort();
+    if (response?.body) void response.body.cancel().catch(() => undefined);
+  };
+  operationSignal?.addEventListener('abort', abort, { once: true });
+  try {
+    const text = `*${title}*\n${body}`.slice(0, 3000);
+    response = await fetchImpl('https://slack.com/api/chat.postMessage', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ channel, text, unfurl_links: false, unfurl_media: false }),
+      signal: controller.signal,
+    });
+    let payload: unknown;
+    try { payload = await response.json(); }
+    catch (error) { return `failed:${redactSlackError(error)}`; }
+    if (response.ok && !!payload && typeof payload === 'object' && (payload as { ok?: unknown }).ok === true) return 'accepted';
+    const apiError = payload && typeof payload === 'object' ? (payload as { error?: unknown }).error : undefined;
+    return `failed:${redactSlackError(apiError ?? `http-${response.status}`)}`;
+  } finally {
+    operationSignal?.removeEventListener('abort', abort);
+  }
 }
 
 async function fetchJsonPages<T>(
@@ -496,31 +555,53 @@ function nodePublicDnsResolver(): PublicDnsResolver {
 
 export function createPublicDnsResolve(
   resolverFactory: () => PublicDnsResolver = nodePublicDnsResolver,
-): (host: string, signal?: AbortSignal) => Promise<ResolvedAddress[]> {
+): (host: string, signal?: AbortSignal) => Promise<PublicDnsResult> {
   return async (host: string, signal?: AbortSignal) => {
-    // One Resolver per lookup ensures an abort cancels only this c-ares request.
-    const resolver = resolverFactory();
-    // Do not use the host's resolver: on AIWA it may route through MagicDNS.
-    resolver.setServers(['1.1.1.1', '8.8.8.8']);
-    const controller = new AbortController();
-    const abort = () => { controller.abort(); resolver.cancel(); };
-    signal?.addEventListener('abort', abort, { once: true });
-    try {
-      const awaitDns = <T>(operation: Promise<T>): Promise<T> => new Promise((resolve, reject) => {
-        const rejectAbort = () => reject(new DeadlineError());
-        controller.signal.addEventListener('abort', rejectAbort, { once: true });
-        operation.then(resolve, reject).finally(() => controller.signal.removeEventListener('abort', rejectAbort));
-      });
-      const [a, aaaa] = await Promise.allSettled([awaitDns(resolver.resolve4(host)), awaitDns(resolver.resolve6(host))]);
-      if (signal?.aborted) throw new DeadlineError();
-      const addresses: ResolvedAddress[] = [];
-      if (a.status === 'fulfilled') addresses.push(...a.value.map((address) => ({ address, family: 4 as const })));
-      if (aaaa.status === 'fulfilled') addresses.push(...aaaa.value.map((address) => ({ address, family: 6 as const })));
-      if (!addresses.length) throw new Error('public DNS did not return A or AAAA records');
-      return addresses;
-    } finally {
-      signal?.removeEventListener('abort', abort);
+    const servers = ['1.1.1.1', '8.8.8.8'] as const;
+    const lookup = async (server: string, family: 4 | 6): Promise<{ addresses: ResolvedAddress[]; status: string }> => {
+      // A Resolver is per public server and record family: NXDOMAIN from one server
+      // must not prevent the other public resolver from contributing an answer.
+      const resolver = resolverFactory();
+      resolver.setServers([server]);
+      const abort = () => resolver.cancel();
+      signal?.addEventListener('abort', abort, { once: true });
+      try {
+        const operation = family === 4 ? resolver.resolve4(host) : resolver.resolve6(host);
+        const addresses = await new Promise<string[]>((resolve, reject) => {
+          const rejectAbort = () => reject(new DeadlineError());
+          signal?.addEventListener('abort', rejectAbort, { once: true });
+          operation.then(resolve, reject).finally(() => signal?.removeEventListener('abort', rejectAbort));
+        });
+        if (signal?.aborted) throw new DeadlineError();
+        return { addresses: addresses.map((address) => ({ address, family })), status: 'ok' };
+      } catch (error) {
+        if (signal?.aborted) throw new DeadlineError();
+        return { addresses: [], status: errorCode(error) ?? errorClass(error) };
+      } finally {
+        signal?.removeEventListener('abort', abort);
+      }
+    };
+    const lookupResults = await Promise.all(servers.flatMap((server) => [
+      lookup(server, 4).then((result) => ({ server, family: 4 as const, result })),
+      lookup(server, 6).then((result) => ({ server, family: 6 as const, result })),
+    ]));
+    if (signal?.aborted) throw new DeadlineError();
+    type DnsLookup = { addresses: ResolvedAddress[]; status: string };
+    const byServer = new Map<string, { a: DnsLookup; aaaa: DnsLookup }>(servers.map((server) => [server, {
+      a: { addresses: [], status: 'unknown' }, aaaa: { addresses: [], status: 'unknown' },
+    }]));
+    for (const item of lookupResults) {
+      const entry = byServer.get(item.server)!;
+      if (item.family === 4) entry.a = item.result;
+      else entry.aaaa = item.result;
     }
+    const dns: PublicDnsStatus = Object.fromEntries(servers.map((server) => {
+      const entry = byServer.get(server)!;
+      return [server, { A: entry.a.status, AAAA: entry.aaaa.status }];
+    }));
+    const unique = new Map<string, ResolvedAddress>();
+    for (const entry of byServer.values()) for (const address of [...entry.a.addresses, ...entry.aaaa.addresses]) unique.set(`${address.family}:${address.address}`, address);
+    return { addresses: [...unique.values()].sort((left, right) => left.family - right.family || left.address.localeCompare(right.address)), dns };
   };
 }
 
@@ -625,7 +706,8 @@ export async function runVoiceWatchdog(deps: VoiceWatchdogDeps, options: VoiceWa
     const calls = callsResult.status === 'fulfilled' ? callsResult.value : [];
     const monitorAlerts = alertsResult.status === 'fulfilled' ? alertsResult.value : [];
     const drops = journalResult.status === 'fulfilled' ? countIngressDrops(journalResult.value.stdout) : null;
-    const addresses = dnsResult.status === 'fulfilled' ? dnsResult.value : [];
+    const dns = dnsResult.status === 'fulfilled' ? dnsResult.value.dns : {};
+    const addresses = dnsResult.status === 'fulfilled' ? dnsResult.value.addresses : [];
     const probes = await Promise.all(addresses.map(async (address) => {
       try {
         const result = await bounded(deadline.signal, (signal) => deps.probeAddress(voiceUrl, address, signal));
@@ -705,7 +787,7 @@ export async function runVoiceWatchdog(deps: VoiceWatchdogDeps, options: VoiceWa
     for (const attempt of deliveryAttempts) {
       if (options.dryRun) { alertsSent.push(attempt.title); continue; }
       try { lastDelivery = await bounded(deadline.signal, (signal) => deps.deliverAlert(attempt.title, attempt.body, signal)); }
-      catch { lastDelivery = { delivered: false, sms: 'failed', ntfy: 'failed' }; }
+      catch { lastDelivery = { delivered: false, slack: 'failed:exception', sms: 'failed', ntfy: 'failed' }; }
       if (lastDelivery.delivered) {
         alertsSent.push(attempt.title);
         state.seenCallSids = uniqueBounded([...state.seenCallSids, ...attempt.callSids]);
@@ -726,16 +808,36 @@ export async function runVoiceWatchdog(deps: VoiceWatchdogDeps, options: VoiceWa
         retainedRetries.push({ ...attempt, attempts, nextAttemptAt: new Date(now.getTime() + delayMinutes * 60_000).toISOString() });
       }
     }
+    if (!options.dryRun && retainedRetries.length > MAX_RETRY_RECORDS) {
+      const overflow = retainedRetries.slice(0, retainedRetries.length - MAX_RETRY_RECORDS);
+      for (const record of overflow) {
+        state.undeliverableIncidentKeys = uniqueBounded([...state.undeliverableIncidentKeys, record.incidentKey]);
+        state.seenCallSids = uniqueBounded([...state.seenCallSids, ...record.callSids]);
+        state.seenAlertSids = uniqueBounded([...state.seenAlertSids, ...record.alertSids]);
+        state.seenIncidentKeys = uniqueBounded([...state.seenIncidentKeys, record.incidentKey]);
+      }
+      deps.log(`[voice-watchdog] alert retry capacity overflow count=${overflow.length} first=${maskedIdentifier(overflow[0].incidentKey)}`);
+    }
     if (!options.dryRun) state.retryRecords = retainedRetries.slice(-MAX_RETRY_RECORDS);
 
     const publicFailures = probes.filter(isReachablePublicFailure);
-    const publicPathFailing = publicFailures.length > 0;
+    const healthyIpv4 = probes.some((probe) => probe.address.family === 4 && probe.status === 'ok');
+    const noTestableAddress = probes.length === 0 || !probes.some((probe) => probe.address.family === 4) || probes.every((probe) => probe.status === 'untestable');
+    const publicFailureReason = addresses.length === 0 ? 'public DNS returned no records'
+      : noTestableAddress ? 'no testable public address — IPv4 A records missing or unreachable'
+        : publicFailures.length ? `failed addresses: ${publicFailures.map((probe) => probe.address.address).join(', ')}`
+          : !healthyIpv4 ? 'no healthy IPv4 public address' : '';
+    const publicPathFailing = !!publicFailureReason;
+    if (dnsResult.status === 'fulfilled') {
+      if (noTestableAddress) sources.probe = 'unverified';
+      else if (publicPathFailing) sources.probe = 'failed';
+    }
     if (publicPathFailing) {
       state.consecutiveProbeFailures += 1;
       if (state.consecutiveProbeFailures >= 2 && !state.publicPathAlertOpen) {
         let publicDelivery: AlertDeliveryStatus | null = null;
         if (!options.dryRun) try { publicDelivery = await bounded(deadline.signal, (signal) => deps.deliverAlert('Voice line: public path failing', [
-          `Public host: ${voiceUrl.hostname}`, `Failed addresses: ${publicFailures.map((probe) => probe.address.address).join(', ')}`,
+          `Public host: ${voiceUrl.hostname}`, `Reason: ${publicFailureReason}`,
           `Tailscale ingress drops since last run: ${dropSummary(drops)}`, 'Action: investigate Funnel/tailscaled, then call any missed customers back.',
         ].join('\n'), signal)); } catch { alertDeliveryFailed = true; }
         lastDelivery = publicDelivery ?? lastDelivery;
@@ -758,7 +860,7 @@ export async function runVoiceWatchdog(deps: VoiceWatchdogDeps, options: VoiceWa
     if (twilioComplete) state.lastRunAt = now.toISOString();
     const heartbeat = {
       at: now.toISOString(), ok: twilioComplete && sources.probe === 'ok' && sources.journal === 'ok' && !alertDeliveryFailed && !deadlineHit,
-      sources, probe: probes.map((probe) => ({ address: probe.address.address, family: probe.address.family, twiml: probe.twiml.ok, websocket: probe.websocket.ok, status: probe.status })),
+      sources, dns, probe: probes.map((probe) => ({ address: probe.address.address, family: probe.address.family, twiml: probe.twiml.ok, websocket: probe.websocket.ok, status: probe.status })),
       failures_found: failures.length, drops, journal_error: journalResult.status === 'rejected' ? errorClass(journalResult.reason) : undefined,
       unattributedAlerts,
       undeliverableAlerts: state.undeliverableIncidentKeys.length,
@@ -767,7 +869,7 @@ export async function runVoiceWatchdog(deps: VoiceWatchdogDeps, options: VoiceWa
     const exitCode = twilioComplete && !deadlineHit && !alertDeliveryFailed ? 0 : 1;
     if (options.dryRun) {
       return {
-        ok: heartbeat.ok, exitCode, failuresFound: failures.length, drops, probes, alertsSent, state, sources, deadlineHit,
+        ok: heartbeat.ok, exitCode, failuresFound: failures.length, drops, probes, alertsSent, state, sources, deadlineHit, dns,
         unattributedAlerts, undeliverableAlerts: state.undeliverableIncidentKeys.length, lastDelivery,
         dryRunSummary: {
           dryRun: true, watermarkFrom: watermark.toISOString(),
@@ -778,14 +880,14 @@ export async function runVoiceWatchdog(deps: VoiceWatchdogDeps, options: VoiceWa
         })),
         wouldAlert: alertsSent,
         probe: Object.fromEntries(probes.map((probe) => [probe.address.address, { twiml: probe.twiml.ok, ws: probe.websocket.ok }])),
-        drops,
+        drops, sources, dns,
       },
     };
     }
     await writeJsonAtomic(deps.fs, deps.config.statePath, state);
     await writeJsonAtomic(deps.fs, path.join(path.dirname(deps.config.statePath), 'voice-watchdog-heartbeat.json'), heartbeat);
     deps.log(redactPhoneNumbers(`[voice-watchdog] ok=${heartbeat.ok} failures=${failures.length} drops=${dropSummary(drops)} probes=${probes.map((probe) => `${probe.address.address}:${probe.status}`).join(',') || 'dns-failed'}`));
-    return { ok: heartbeat.ok, exitCode, failuresFound: failures.length, drops, probes, alertsSent, state, sources, deadlineHit,
+    return { ok: heartbeat.ok, exitCode, failuresFound: failures.length, drops, probes, alertsSent, state, sources, deadlineHit, dns,
       unattributedAlerts, undeliverableAlerts: state.undeliverableIncidentKeys.length, lastDelivery };
   } finally {
     clearTimeout(deadlineTimer);

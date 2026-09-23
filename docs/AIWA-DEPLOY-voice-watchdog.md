@@ -24,8 +24,12 @@ The existing `/opt/grizzly-hcp/.env` must already contain the production `TWILIO
 - `VOICE_WATCHDOG_ENABLED` — defaults to enabled when unset.
 - `VOICE_WATCHDOG_TEST_CALLERS` — optional comma-separated E.164 line-check callers.
 - `VOICE_WATCHDOG_PUBLIC_URL` — optional override; otherwise `VOICE_PUBLIC_URL` is used.
+- `VOICE_WATCHDOG_SLACK_TOKEN` — the `xoxb-` token for the watchdog-local Slack delivery.
+- `VOICE_WATCHDOG_SLACK_CHANNEL` — optional private-channel ID; defaults to `C0BV3678T9N` (`#ops-alerts`).
 
 Do not copy secrets into this repository or a command transcript.
+
+On AIWA, make a backup of `/opt/grizzly-hcp/.env` first. Then, through the approved on-host deployment path, copy only the `VOICE_WATCHDOG_SLACK_TOKEN` value from `/home/hermes/.hermes/triage-slack.env` into `/opt/grizzly-hcp/.env`; do not print either value. The Hermes `maverick` bot already has `chat:write` and is a member of the private `#ops-alerts` channel, so no Slack membership or permission change is part of this deployment.
 
 ## Dry run
 
@@ -63,7 +67,7 @@ sudo systemctl show voice-watchdog.service -p Result -p ActiveState
 sudo cat /opt/grizzly-hcp/data/voice-watchdog-heartbeat.json
 ```
 
-The heartbeat contains the last run time, per-address TwiML/WebSocket result and status, failures found, ingress-drop count, and source statuses for `calls`, `alerts`, `probe`, and `journal` (`ok`, `failed`, `unavailable`, or `incomplete`). It also records redacted `unattributedAlerts` (relevant Monitor records that had no `resource_sid`), `undeliverableAlerts`, and the last SMS/ntfy channel statuses; it contains no credentials or full destination numbers. An IPv6 address that cannot be connected from AIWA because of `ENETUNREACH`, `EHOSTUNREACH`, or `EADDRNOTAVAIL` is shown as `untestable`, not as a public outage; IPv4 failures and IPv6 addresses that returned a wrong HTTP status remain public-path failures. The state file is atomic and keeps bounded Twilio dedupe IDs and at most 100 pending alert retries; if it is corrupt, the watchdog starts fresh but considers only the most recent 30 minutes so it does not replay old missed-call alerts.
+The heartbeat contains the last run time, per-address TwiML/WebSocket result and status, failures found, ingress-drop count, a per-public-resolver `dns` map for A/AAAA results, and source statuses for `calls`, `alerts`, `probe`, and `journal` (`ok`, `failed`, `unavailable`, `incomplete`, or `unverified`). `unverified` means the watchdog had no usable IPv4 public-path verification, including an A-record absence or only unreachable IPv6 addresses. It also records redacted `unattributedAlerts` (relevant Monitor records that had no `resource_sid`), `undeliverableAlerts`, and last Slack/SMS/ntfy channel statuses; it contains no credentials or full destination numbers. An IPv6 address that cannot be connected from AIWA because of `ENETUNREACH`, `EHOSTUNREACH`, or `EADDRNOTAVAIL` is shown as `untestable`; it is not healthy by itself. The state file is atomic and keeps bounded Twilio dedupe IDs and at most 100 pending alert retries; if it is corrupt, the watchdog starts fresh but considers only the most recent 30 minutes so it does not replay old missed-call alerts.
 
 A `Result=failed` run means a Twilio collection failed or was incomplete, a Monitor resource lookup could not establish the caller, the 70-second application deadline was reached, or no configured alert channel accepted a required alert. It deliberately does not imply that a customer callback was sent; inspect the heartbeat source statuses and `lastDelivery` before retrying or investigating the named dependency. Journal unavailability and a detected public-path outage are visible in the heartbeat but do not by themselves make the unit fail.
 
@@ -75,7 +79,9 @@ A `Result=failed` run means a Twilio collection failed or was incomplete, a Moni
 | `Voice line: public path failing` | At least two consecutive runs had a failed TwiML or WebSocket check for an IPv4 public-DNS address, or an IPv6 address that connected and returned a wrong status. Local IPv6-unavailable addresses are heartbeat-only `untestable`. The alert includes ingress-drop context. | Call any missed customers back, then investigate Funnel/tailscaled ingress and the public listener. Do not assume the normal `/handoff` callback ran. |
 | `Voice line: recovered` | All public-DNS-address checks are healthy after a previously alerted path failure. | Record recovery; still call back customers identified by earlier missed-call alerts. |
 
-Missed-call incidents are persisted only after SMS or ntfy accepts them. If neither accepts, the individual incident is retried after 2, 4, 8, 16, and then 32 minutes, with no replay of any sibling incident that already delivered. After the sixth failed attempt it is marked given-up, counted as `undeliverableAlerts`, and logged with a redacted incident key; the retry list is capped at 100 entries. A relevant Monitor Alert with no `resource_sid` is instead deduped by its alert SID, counted as `unattributedAlerts` with its Twilio error code, and never generates an unknown-caller callback alert.
+Slack is the primary private-ops channel: when configured, the watchdog posts to `#ops-alerts` first and accepts Slack only when `chat.postMessage` returns both HTTP 2xx and JSON `ok: true`. If Slack is absent or rejects the message, the watchdog falls back to the existing SMS path and configured ntfy delivery; an incident is delivered when any channel accepts it. Missed-call incidents are persisted only after an accepted channel. If none accepts, the individual incident is retried after 2, 4, 8, 16, and then 32 minutes, with no replay of any sibling incident that already delivered. After the sixth failed attempt it is marked given-up, counted as `undeliverableAlerts`, and logged with a redacted incident key. The retry list is capped at 100 entries: an overflow record is explicitly given-up, deduped, and counted rather than silently dropped. A relevant Monitor Alert with no `resource_sid` is instead deduped by its alert SID, counted as `unattributedAlerts` with its Twilio error code, and never generates an unknown-caller callback alert.
+
+Public DNS queries Cloudflare and Google independently for each A/AAAA lookup. If neither returns any record, or no IPv4 public address can be verified, that is a public-path failure and alerts after two consecutive runs; the alert gives the exact reason. Recovery requires a successful IPv4 TwiML and WebSocket probe.
 
 ## Disable and rollback
 
