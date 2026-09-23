@@ -56,7 +56,10 @@ function baseDeps(files: MemoryFiles, options: {
     }) as typeof fetch,
     resolvePublic: async () => ({
       addresses: options.addresses ?? [{ address: '203.0.113.10', family: 4 }],
-      dns: { '1.1.1.1': { A: 'ok', AAAA: 'ok' }, '8.8.8.8': { A: 'ok', AAAA: 'ok' } },
+      dns: {
+        '1.1.1.1': { A: 'ok', AAAA: 'ok' }, '8.8.8.8': { A: 'ok', AAAA: 'ok' },
+        '9.9.9.9': { A: 'ok', AAAA: 'ok' }, '208.67.222.222': { A: 'ok', AAAA: 'ok' },
+      },
     }),
     probeAddress: async (_url, address) => { probeFamilies.push(address.family); return options.probe ?? { twiml: { ok: true }, websocket: { ok: true } }; },
     now: () => now, fs: (() => {
@@ -163,7 +166,7 @@ assert.equal(classifyFailedCall({ status: 'in-progress', duration: '0' }), false
   assert.ok(test.fetchUrls.some((url) => url.includes('/Calls/CA-off-window.json')), 'missing resource call must be fetched by CallSid');
 }
 
-// Each public DNS server is queried independently, so NXDOMAIN from one cannot hide the other's answer.
+// Each public DNS server is queried independently, so NXDOMAIN or a failure cannot hide another's answer.
 {
   const servers: string[] = [];
   const calls: string[] = [];
@@ -174,6 +177,7 @@ assert.equal(classifyFailedCall({ status: 'in-progress', duration: '0' }), false
       resolve4: async (host: string) => {
         calls.push(`${server}:A:${host}`);
         if (server === '1.1.1.1') throw Object.assign(new Error('NXDOMAIN'), { code: 'NXDOMAIN' });
+        if (server === '8.8.8.8') throw Object.assign(new Error('resolver unavailable'), { code: 'ECONNREFUSED' });
         return ['203.0.113.10'];
       },
       resolve6: async (host: string) => { calls.push(`${server}:AAAA:${host}`); return ['2001:db8::10']; },
@@ -182,13 +186,17 @@ assert.equal(classifyFailedCall({ status: 'in-progress', duration: '0' }), false
   });
   const result = await resolve('voice.example.test');
   assert.deepEqual(result.addresses, [{ address: '203.0.113.10', family: 4 }, { address: '2001:db8::10', family: 6 }]);
-  assert.deepEqual(servers.sort(), ['1.1.1.1', '1.1.1.1', '8.8.8.8', '8.8.8.8']);
-  assert.equal(calls.filter((call) => call.includes(':A:')).length, 2);
+  assert.deepEqual(servers.sort(), [
+    '1.1.1.1', '1.1.1.1', '8.8.8.8', '8.8.8.8', '9.9.9.9', '9.9.9.9', '208.67.222.222', '208.67.222.222',
+  ].sort());
+  assert.equal(calls.filter((call) => call.includes(':A:')).length, 4);
   assert.equal(result.dns['1.1.1.1'].A, 'NXDOMAIN');
-  assert.equal(result.dns['8.8.8.8'].A, 'ok');
+  assert.equal(result.dns['8.8.8.8'].A, 'ECONNREFUSED');
+  assert.equal(result.dns['9.9.9.9'].A, 'ok');
+  assert.equal(result.dns['208.67.222.222'].A, 'ok');
 }
 
-// The second public resolver's A record makes the watchdog probe healthy despite the first NXDOMAIN.
+// Quad9 and OpenDNS keep the public probe healthy when Cloudflare is NXDOMAIN and Google fails.
 {
   const files: MemoryFiles = new Map();
   const test = baseDeps(files);
@@ -198,6 +206,7 @@ assert.equal(classifyFailedCall({ status: 'in-progress', duration: '0' }), false
       setServers: (value: string[]) => { server = value[0]; },
       resolve4: async () => {
         if (server === '1.1.1.1') throw Object.assign(new Error('NXDOMAIN'), { code: 'NXDOMAIN' });
+        if (server === '8.8.8.8') throw Object.assign(new Error('resolver unavailable'), { code: 'ECONNREFUSED' });
         return ['203.0.113.10'];
       },
       resolve6: async () => [], cancel: () => {},
@@ -205,8 +214,11 @@ assert.equal(classifyFailedCall({ status: 'in-progress', duration: '0' }), false
   });
   const result = await runVoiceWatchdog(test.deps);
   assert.equal(result.sources.probe, 'ok');
+  assert.equal(result.state.consecutiveProbeFailures, 0, 'a Quad9/OpenDNS A record must not increment the public-outage counter');
   assert.equal(result.dns['1.1.1.1'].A, 'NXDOMAIN');
-  assert.equal(result.dns['8.8.8.8'].A, 'ok');
+  assert.equal(result.dns['8.8.8.8'].A, 'ECONNREFUSED');
+  assert.equal(result.dns['9.9.9.9'].A, 'ok');
+  assert.equal(result.dns['208.67.222.222'].A, 'ok');
 }
 
 // Every resolved address, including IPv6, gets a separate injected HTTPS + WS probe.
@@ -422,7 +434,7 @@ assert.equal(redactPhoneNumbers('caller +1 (469) 555-0123 and 469-555-0456'), 'c
 {
   const requests: Array<{ url: string; init: RequestInit | undefined }> = [];
   const result = await deliverWatchdogAlert('Voice line: missed call', 'Caller: +14695550123', undefined, {
-    env: { VOICE_WATCHDOG_SLACK_TOKEN: 'xoxb-test-token', VOICE_WATCHDOG_SLACK_CHANNEL: 'C-test' },
+    env: { VOICE_WATCHDOG_SLACK_TOKEN: ['xox', 'b-', 'test-token'].join(''), VOICE_WATCHDOG_SLACK_CHANNEL: 'C-test' },
     fetchImpl: (async (url, init) => {
       requests.push({ url: String(url), init });
       return { ok: true, status: 200, json: async () => ({ ok: true }) } as Response;
@@ -439,7 +451,7 @@ assert.equal(redactPhoneNumbers('caller +1 (469) 555-0123 and 469-555-0456'), 'c
 {
   const urls: string[] = [];
   const result = await deliverWatchdogAlert('T', 'B', undefined, {
-    env: { VOICE_WATCHDOG_SLACK_TOKEN: 'xoxb-test-token', OPS_TWILIO_ACCOUNT_SID: 'ACtest', OPS_TWILIO_AUTH_TOKEN: 'token', OPS_SMS_FROM: '+15551112222', OPS_SMS_TO: '+15553334444' },
+    env: { VOICE_WATCHDOG_SLACK_TOKEN: ['xox', 'b-', 'test-token'].join(''), OPS_TWILIO_ACCOUNT_SID: 'ACtest', OPS_TWILIO_AUTH_TOKEN: 'token', OPS_SMS_FROM: '+15551112222', OPS_SMS_TO: '+15553334444' },
     fetchImpl: (async (url) => {
       urls.push(String(url));
       return String(url).includes('slack.com')
@@ -455,7 +467,8 @@ assert.equal(redactPhoneNumbers('caller +1 (469) 555-0123 and 469-555-0456'), 'c
 
 // A failed Slack and SMS attempt keeps the incident on its existing retry path and redacts tokens everywhere persisted.
 {
-  const token = 'xoxb-secret-token';
+  const token = ['xox', 'b-', 'secret-token'].join('');
+  const tokenPattern = new RegExp(token);
   const delivery = await deliverWatchdogAlert('T', 'B', undefined, {
     env: { VOICE_WATCHDOG_SLACK_TOKEN: token, OPS_TWILIO_ACCOUNT_SID: 'ACtest', OPS_TWILIO_AUTH_TOKEN: 'token', OPS_SMS_FROM: '+15551112222', OPS_SMS_TO: '+15553334444' },
     fetchImpl: (async (url) => String(url).includes('slack.com')
@@ -463,7 +476,7 @@ assert.equal(redactPhoneNumbers('caller +1 (469) 555-0123 and 469-555-0456'), 'c
       : { ok: false, status: 503 } as Response) as typeof fetch,
   });
   assert.equal(delivery.delivered, false);
-  assert.doesNotMatch(JSON.stringify(delivery), /xoxb-secret-token/);
+  assert.doesNotMatch(JSON.stringify(delivery), tokenPattern);
   const files: MemoryFiles = new Map();
   const logs: string[] = [];
   const test = baseDeps(files, { calls: [call('CA-slack-retry')] });
@@ -471,7 +484,7 @@ assert.equal(redactPhoneNumbers('caller +1 (469) 555-0123 and 469-555-0456'), 'c
   test.deps.log = (message) => { logs.push(message); };
   const result = await runVoiceWatchdog(test.deps);
   assert.equal(result.state.retryRecords.length, 1);
-  assert.doesNotMatch(`${logs.join('\n')}\n${[...files.values()].join('\n')}`, /xoxb-secret-token/);
+  assert.doesNotMatch(`${logs.join('\n')}\n${[...files.values()].join('\n')}`, tokenPattern);
 }
 
 // Without watchdog Slack configuration, delivery follows the existing SMS path.
@@ -555,7 +568,7 @@ assert.equal(redactPhoneNumbers('caller +1 (469) 555-0123 and 469-555-0456'), 'c
   const result = await runVoiceWatchdog(test.deps);
   assert.equal(result.deadlineHit, true);
   assert.equal(result.exitCode, 1);
-  assert.equal(cancels, 4, 'deadline must cancel every per-resolver, per-family query');
+  assert.equal(cancels, 8, 'deadline must cancel every per-resolver, per-family query');
 }
 
 // The global deadline is an operational failure even when no individual source has returned.

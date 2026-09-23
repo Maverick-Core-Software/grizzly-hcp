@@ -557,7 +557,7 @@ export function createPublicDnsResolve(
   resolverFactory: () => PublicDnsResolver = nodePublicDnsResolver,
 ): (host: string, signal?: AbortSignal) => Promise<PublicDnsResult> {
   return async (host: string, signal?: AbortSignal) => {
-    const servers = ['1.1.1.1', '8.8.8.8'] as const;
+    const servers = ['1.1.1.1', '8.8.8.8', '9.9.9.9', '208.67.222.222'] as const;
     const lookup = async (server: string, family: 4 | 6): Promise<{ addresses: ResolvedAddress[]; status: string }> => {
       // A Resolver is per public server and record family: NXDOMAIN from one server
       // must not prevent the other public resolver from contributing an answer.

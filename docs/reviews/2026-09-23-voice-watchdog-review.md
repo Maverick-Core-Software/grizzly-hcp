@@ -525,3 +525,66 @@ flags it; this is not counted as a production defect.
 - `D:\\Workspace\\Active\\grizzly-hcp\\node_modules\\.bin\\tsx.cmd src/ops/voice-watchdog.check.ts` — passed (`voice watchdog self-check passed`).
 - `D:\\Workspace\\Active\\grizzly-hcp\\node_modules\\.bin\\tsx.cmd src/ops/alert.check.ts` — passed (`ops alert self-check passed`).
 - `D:\\Workspace\\Active\\grizzly-hcp\\node_modules\\.bin\\tsc.cmd --noEmit`, filtered for `src/ops/voice-watchdog.ts` and `src/ops/voice-watchdog.check.ts` — zero matching errors.  The command exits 2 only for four pre-existing errors in `src/automations/estimates/from-proposal.ts` and `src/hcp/mine-pricebook-candidates.ts` outside this review surface.
+
+## Fix response (VW7)
+
+| Finding / note | Implementation | Offline coverage |
+| --- | --- | --- |
+| MEDIUM — Cloudflare NXDOMAIN left Google as the sole effective IPv4 source | The public resolver set is now Cloudflare (`1.1.1.1`), Google (`8.8.8.8`), Quad9 (`9.9.9.9`), and OpenDNS (`208.67.222.222`). Each A/AAAA query still has its own resolver, cancellation, and deadline handling, runs in parallel, and contributes to the union and heartbeat `dns` map. | The resolver fixture covers Cloudflare NXDOMAIN plus Google failure while Quad9 and OpenDNS return the A record; the run remains `sources.probe: ok` and leaves the public-outage counter at zero. |
+| Release hygiene — token-shaped Slack fixture | Slack fixture values and the redaction assertion pattern are constructed at runtime from token segments, so the check source contains no token-shaped fixture literal. | `voice-watchdog.check.ts` exercises accepted Slack, API-rejection fallback, and token redaction using the runtime-built values. |
+
+## Re-review (VW7)
+
+**VERDICT: ACCEPT**
+
+VW7 resolves the VW6 MEDIUM resolver-diversity finding without changing the
+watchdog's safety model.  The four independent public resolvers preserve the
+all-empty/no-testable-IPv4 `unverified` behavior while removing the known
+Cloudflare-NXDOMAIN-plus-Google-single-point false-outage scenario.  There are
+**0 open HIGH/BLOCKER findings** and no new production-relevant defects found
+in the VW7 diff.
+
+### VW6 finding resolution
+
+1. **MEDIUM — known-bad Cloudflare resolver left Google as the sole effective IPv4 source: RESOLVED.**
+   `src/ops/voice-watchdog.ts:556-605` now independently starts one resolver
+   per A/AAAA family for Cloudflare (`1.1.1.1`), Google (`8.8.8.8`), Quad9
+   (`9.9.9.9`), and OpenDNS (`208.67.222.222`), then unions all successful
+   records.  The focused fixture at
+   `src/ops/voice-watchdog.check.ts:169-222` makes Cloudflare return NXDOMAIN
+   and Google fail while Quad9/OpenDNS return an A record; it passes with
+   `sources.probe === 'ok'` and `consecutiveProbeFailures === 0`.  The runbook
+   correctly documents all four resolvers and their intentional redundancy at
+   `docs/AIWA-DEPLOY-voice-watchdog.md:84`.
+
+### Regression and containment checks
+
+- The same eight queries are launched in parallel at
+  `src/ops/voice-watchdog.ts:584-587`; each has its own Resolver and receives
+  `cancel()` on the common bounded operation abort (`:561-582`).  The
+  adversarial deadline fixture at `src/ops/voice-watchdog.check.ts:556-572`
+  passes and confirms all eight cancellation hooks are reached.  They remain
+  inside the existing 20-second operation bound and 70-second run deadline,
+  below the systemd 90-second limit.
+- The union, per-resolver A/AAAA heartbeat map, `unverified` behavior for all
+  empty/no-usable-IPv4 results, two-run public-path alert gate, and
+  healthy-IPv4 recovery requirement are unchanged.  With at least one good A
+  result, one resolver failure does not increment the public-outage counter;
+  a delivered outage remains open rather than paging every two minutes.
+- Runtime-built Slack fixture values and assertion patterns at
+  `src/ops/voice-watchdog.check.ts:434-487` remove the token-shaped static
+  literal while retaining accepted-Slack, fallback, and redaction coverage.
+  The prior safety boundaries also remain intact: fixed `data/` writes,
+  bounded state/retries, dry-run non-send/non-write behavior, no
+  process-control path, no WebSocket relay message, Twilio overlap and
+  pagination handling, IPv6 `untestable`, journal unavailable semantics, and
+  the unchanged shared `src/ops/alert.ts`.
+- Coordinator-provided AIWA evidence for live commit `4dd5c7e` reports both
+  IPv4 Funnel addresses passing TwiML and WebSocket, IPv6 untestable, and all
+  sources `ok`.  This review did not perform a network or live-host action.
+
+### Checks run
+
+- `D:\\Workspace\\Active\\grizzly-hcp\\node_modules\\.bin\\tsx.cmd src/ops/voice-watchdog.check.ts` — passed (`voice watchdog self-check passed`).
+- `D:\\Workspace\\Active\\grizzly-hcp\\node_modules\\.bin\\tsx.cmd src/ops/alert.check.ts` — passed (`ops alert self-check passed`).
+- `D:\\Workspace\\Active\\grizzly-hcp\\node_modules\\.bin\\tsc.cmd --noEmit`, filtered for `src/ops/voice-watchdog.ts` and `src/ops/voice-watchdog.check.ts` — zero matching errors.  The compiler's exit 2 is limited to the same four pre-existing diagnostics in `src/automations/estimates/from-proposal.ts` and `src/hcp/mine-pricebook-candidates.ts`, outside this review surface.
