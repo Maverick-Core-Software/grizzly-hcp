@@ -45,7 +45,7 @@
  *   contract, and the check pins it.
  *
  * THE PLAN CARRIES NO CALLER CONTENT
- *   A plan echoes the opaque correlation id, the source, the turn reference, the
+ *   A plan echoes the opaque correlation id, the source, the confirmed sequence and payload version, the
  *   masked caller reference and the transcript LENGTH — never the transcript
  *   itself. There is therefore no field in this contract in which caller text
  *   could travel, and no field a destination, endpoint or room could occupy.
@@ -62,7 +62,7 @@
  *   the production boundary.
  */
 import { E164_RE, type C0Config } from './c0-config.js';
-import { isCorrelationId, isTurnRef } from './c0-controller.js';
+import { isCorrelationId, isPositiveInteger } from './c0-controller.js';
 import {
   C0_ADMITTED_FIELDS,
   C0_INGRESS_SOURCES,
@@ -107,11 +107,12 @@ export const C0_TRANSPORT_PLAN_FIELDS: readonly string[] = [
   'correlationId',
   'delivered',
   'dispatched',
+  'intentSequence',
+  'payloadVersion',
   'performed',
   'phase',
   'source',
   'status',
-  'turnRef',
   'utteranceChars',
 ];
 
@@ -151,7 +152,8 @@ export interface C0TransportPlan {
   readonly callerVisible: false;
   readonly correlationId: string;
   readonly source: C0IngressSource;
-  readonly turnRef: string;
+  readonly intentSequence: number;
+  readonly payloadVersion: number;
   readonly callerMasked: string;
   /** The transcript LENGTH only: no caller text travels through this contract. */
   readonly utteranceChars: number;
@@ -223,7 +225,7 @@ function verifyAdmittedHandle(value: unknown): C0AdmittedIngress | null {
   if (!isPlainObject(gate) || gate.allowed !== true || gate.reason !== 'allowed') return null;
 
   if (!isCorrelationId(value.correlationId)) return null;
-  if (!isTurnRef(value.turnRef)) return null;
+  if (!isPositiveInteger(value.intentSequence) || !isPositiveInteger(value.payloadVersion)) return null;
 
   const callerMasked = value.callerMasked;
   if (typeof callerMasked !== 'string' || callerMasked.trim() === '') return null;
@@ -301,7 +303,8 @@ export function planC0Transport(config: C0Config, ingress: unknown): C0Transport
     callerVisible: false,
     correlationId: handle.correlationId,
     source: handle.source,
-    turnRef: handle.turnRef,
+    intentSequence: handle.intentSequence,
+    payloadVersion: handle.payloadVersion,
     callerMasked: handle.callerMasked,
     utteranceChars: handle.utterance === null ? 0 : handle.utterance.length,
   };

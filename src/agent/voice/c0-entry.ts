@@ -76,9 +76,8 @@ import {
   type C0GateResult,
 } from './c0-config.js';
 import {
-  DEFAULT_TURN_REF,
   isCorrelationId,
-  isTurnRef,
+  isPositiveInteger,
   type C0GateRefusalReason,
 } from './c0-controller.js';
 import { maskPhone } from './outbox.js';
@@ -102,8 +101,9 @@ export const C0_INGRESS_SOURCES: readonly C0IngressSource[] = Object.freeze([
 export const C0_INGRESS_FIELDS: readonly string[] = Object.freeze([
   'callerE164',
   'correlationId',
+  'intentSequence',
+  'payloadVersion',
   'source',
-  'turnRef',
   'utterance',
 ]);
 
@@ -111,6 +111,8 @@ export const C0_INGRESS_FIELDS: readonly string[] = Object.freeze([
 export const C0_INGRESS_REQUIRED_FIELDS: readonly string[] = Object.freeze([
   'callerE164',
   'correlationId',
+  'intentSequence',
+  'payloadVersion',
   'source',
 ]);
 
@@ -124,7 +126,8 @@ export type C0AdmissionRefusalReason =
   | 'ingress_source_not_accepted'
   | 'ingress_caller_malformed'
   | 'ingress_correlation_malformed'
-  | 'ingress_turn_ref_malformed'
+  | 'ingress_intent_sequence_malformed'
+  | 'ingress_payload_version_malformed'
   | 'ingress_utterance_invalid'
   | C0GateRefusalReason;
 
@@ -135,10 +138,11 @@ export const C0_ADMITTED_FIELDS: readonly string[] = [
   'correlationId',
   'delivered',
   'gate',
+  'intentSequence',
+  'payloadVersion',
   'performed',
   'source',
   'status',
-  'turnRef',
   'utterance',
 ];
 
@@ -166,7 +170,8 @@ export interface C0AdmittedIngress {
   readonly correlationId: string;
   /** Masked by construction — the raw identity does not leave this function. */
   readonly callerMasked: string;
-  readonly turnRef: string;
+  readonly intentSequence: number;
+  readonly payloadVersion: number;
   /** Verbatim, bounded, never interpreted. `null` when the turn carried none. */
   readonly utterance: string | null;
   /** Always the open gate: `{ allowed: true, reason: 'allowed' }`. */
@@ -276,15 +281,10 @@ export function admitC0Ingress(config: C0Config, ingress: unknown): C0AdmissionR
   // 6. The correlation id must be one the controller would also accept.
   if (!isCorrelationId(ingress.correlationId)) return inert('ingress_correlation_malformed');
 
-  // 7. An optional turn reference follows the controller's shape.
-  let turnRef = DEFAULT_TURN_REF;
-  const rawTurnRef = ingress.turnRef;
-  if (rawTurnRef !== undefined && rawTurnRef !== null) {
-    if (typeof rawTurnRef !== 'string' || rawTurnRef.trim() === '' || !isTurnRef(rawTurnRef)) {
-      return inert('ingress_turn_ref_malformed');
-    }
-    turnRef = rawTurnRef.trim();
-  }
+  // 7. Sequence and payload version are explicit positive integers; no default
+  // can allocate a delivery before the caller's confirmation.
+  if (!isPositiveInteger(ingress.intentSequence)) return inert('ingress_intent_sequence_malformed');
+  if (!isPositiveInteger(ingress.payloadVersion)) return inert('ingress_payload_version_malformed');
 
   // 8. An optional transcript: a string, bounded. Carried verbatim; never read.
   let utterance: string | null = null;
@@ -305,7 +305,8 @@ export function admitC0Ingress(config: C0Config, ingress: unknown): C0AdmissionR
     source,
     correlationId: ingress.correlationId as string,
     callerMasked: maskPhone(caller),
-    turnRef,
+    intentSequence: ingress.intentSequence,
+    payloadVersion: ingress.payloadVersion,
     utterance,
     gate,
   });

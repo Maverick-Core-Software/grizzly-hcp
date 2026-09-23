@@ -57,7 +57,8 @@ const HANDLE: C0AdmittedIngress = (() => {
     source: 'transport',
     correlationId: 'CA-c0-2001',
     callerE164: FICTION_E164_A,
-    turnRef: 'turn.5',
+    intentSequence: 5,
+    payloadVersion: 1,
     utterance: UTTERANCE,
   });
   assert.equal(result.status, 'admitted', 'the fixture handle must really be admitted');
@@ -164,7 +165,8 @@ function main(): void {
       ['a RAW caller number where a masked reference belongs', forged({ callerMasked: FICTION_E164_A })],
       ['an empty caller reference', forged({ callerMasked: '' })],
       ['an illegal correlation id', forged({ correlationId: 'CA 123' })],
-      ['an illegal turn reference', forged({ turnRef: 'bad ref' })],
+      ['an illegal confirmed intent sequence', forged({ intentSequence: 0 })],
+      ['an illegal payload version', forged({ payloadVersion: 0 })],
       ['an unknown source', forged({ source: 'not-a-source' })],
       ['a non-string transcript', forged({ utterance: 42 })],
       ['an over-long transcript', forged({ utterance: 'x'.repeat(MAX_UTTERANCE_CHARS + 1) })],
@@ -216,7 +218,8 @@ function main(): void {
     assert.equal(plan.status, 'planned');
     assert.equal(plan.correlationId, HANDLE.correlationId);
     assert.equal(plan.source, HANDLE.source);
-    assert.equal(plan.turnRef, HANDLE.turnRef);
+    assert.equal(plan.intentSequence, HANDLE.intentSequence);
+    assert.equal(plan.payloadVersion, HANDLE.payloadVersion);
     assert.equal(plan.callerMasked, HANDLE.callerMasked);
     assert.equal(plan.utteranceChars, UTTERANCE.length, 'the plan carries the transcript LENGTH');
 
@@ -239,7 +242,8 @@ function main(): void {
       source: 'transport',
       correlationId: 'CA-c0-2001',
       callerE164: FICTION_E164_A,
-      turnRef: 'turn.5',
+      intentSequence: 5,
+      payloadVersion: 1,
       utterance: UTTERANCE,
     });
     assert.equal(fresh.status, 'admitted');

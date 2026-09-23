@@ -26,7 +26,6 @@ import {
   C0_ENQUEUE_KINDS,
   C0_ENQUEUED_RESULT_FIELDS,
   C0_INERT_RESULT_FIELDS,
-  DEFAULT_TURN_REF,
   createC0Controller,
   deriveTurnIdempotencyKey,
   isAlreadyRedacted,
@@ -64,6 +63,8 @@ function request(overrides: Partial<C0EnqueueRequest> = {}): C0EnqueueRequest {
   return {
     callerE164: FICTION_E164_A,
     correlationId: CORRELATION,
+    intentSequence: 1,
+    payloadVersion: 1,
     record: { redacted: true, kind: 'transfer', payload: TURN_PAYLOAD },
     ...overrides,
   };
@@ -195,11 +196,11 @@ function main(): void {
           `correlation ${correlationId}`,
         );
       }
-      for (const turnRef of ['bad ref', 'r'.repeat(65), 'ref+1']) {
+      for (const intentSequence of [0, -1, 1.5, Number.NaN, '1']) {
         assert.equal(
-          refusal(controller.enqueue(request({ turnRef }))),
-          'correlation_malformed',
-          `turnRef ${turnRef}`,
+          refusal(controller.enqueue(request({ intentSequence } as Partial<C0EnqueueRequest>))),
+          'intent_sequence_malformed',
+          `intent sequence ${String(intentSequence)}`,
         );
       }
       assert.equal(calls.length, before, 'no correlation failure reached the store');
@@ -244,7 +245,7 @@ function main(): void {
       assert.equal(result.status, 'enqueued');
       assert.equal(result.created, true);
       assert.match(result.idempotencyKey, IDEMPOTENCY_KEY_RE, 'the key is store-legal');
-      assert.ok(result.idempotencyKey.startsWith('c0.booking.'), 'the key names its kind');
+      assert.ok(result.idempotencyKey.startsWith('c0.delivery.'), 'the key names the cross-kind delivery identity');
       assert.equal(result.recordId, result.record.id, 'the reported id is the stored id');
 
       assert.equal(freshCalls.length, 1);
@@ -260,6 +261,78 @@ function main(): void {
     }
 
     // ─── 7. Replay is a duplicate, across instances too ────────────────────
+    {
+      const callSid = `CA${'a'.repeat(32)}`;
+      const service = expectEnqueued(controller.enqueueServiceIntent({
+        callSid,
+        callerE164: FICTION_E164_A,
+        intentSequence: 7,
+        payloadVersion: 2,
+        intent: {
+          name: 'Test Caller',
+          callbackE164: FICTION_E164_A,
+          serviceAddress: '101 Main Street',
+          scope: 'Panel inspection',
+          preferredWindows: 'Tuesday morning',
+          callerConfirmed: true,
+        },
+      }));
+      assert.equal(service.record.kind, 'service_intent');
+      assert.equal(service.record.payload.callbackE164, FICTION_E164_A, 'durable payload retains the callback');
+      assert.equal(service.record.payload.serviceAddress, '101 Main Street');
+      assert.equal(service.record.payloadVersion, 2);
+      assert.equal(
+        expectEnqueued(controller.enqueueServiceIntent({
+          callSid, callerE164: FICTION_E164_A, intentSequence: 7, payloadVersion: 2,
+          intent: {
+            name: 'Test Caller', callbackE164: FICTION_E164_A, serviceAddress: '101 Main Street',
+            scope: 'Panel inspection', preferredWindows: 'Tuesday morning', callerConfirmed: true,
+          },
+        })).status,
+        'duplicate',
+      );
+      assert.equal(
+        refusal(controller.enqueueServiceIntent({
+          callSid, callerE164: FICTION_E164_A, intentSequence: 8, payloadVersion: 2,
+          intent: {
+            name: 'Test Caller', callbackE164: FICTION_E164_A, serviceAddress: '101 Main Street',
+            scope: 'Contact me at somebody@example.com', preferredWindows: 'Tuesday morning', callerConfirmed: true,
+          },
+        })),
+        'service_intent_invalid',
+      );
+      for (const field of ['name', 'scope', 'preferredWindows', 'serviceAddress'] as const) {
+        for (const value of ['4111 1111 1111 1111', '٤١١١ ١١١١ ١١١١ ١١١١', '۴۱۱۱ ۱۱۱۱ ۱۱۱۱ ۱۱۱۱', '४१११ ११११ ११११ ११११', '৪১১১ ১১১১ ১১১১ ১১১১', '4111-1111-1111-1111', '4111–1111–1111–1111', '4111‑1111‑1111‑1111', '4111 1111 1111 1111', '４１１１ １１１１ １１１１ １１１１', '+1 (555) 123-4567', '555.123.4567', '4111 and 1111 and 1111 and 1111', 'word4111 1111 1111 1111word']) {
+          const intent = { name: 'Test Caller', callbackE164: FICTION_E164_A, serviceAddress: '101 Main Street', scope: 'Panel inspection', preferredWindows: 'Tuesday morning', callerConfirmed: true as const };
+          intent[field] = value;
+          assert.equal(refusal(controller.enqueueServiceIntent({ callSid, callerE164: FICTION_E164_A, intentSequence: 100 + value.length + field.length, payloadVersion: 2, intent })), 'service_intent_invalid', `${field} rejects formatted sensitive digits`);
+        }
+      }
+      assert.equal(
+        refusal(controller.enqueueServiceIntent({
+          callSid: 'CA-not-valid', callerE164: FICTION_E164_A, intentSequence: 8, payloadVersion: 2,
+          intent: {
+            name: 'Test Caller', callbackE164: FICTION_E164_A, serviceAddress: '101 Main Street',
+            scope: 'Panel inspection', preferredWindows: 'Tuesday morning', callerConfirmed: true,
+          },
+        })),
+        'call_sid_malformed',
+      );
+      const transfer = expectEnqueued(controller.enqueueTransferRequest({
+        callSid, callerE164: FICTION_E164_A, intentSequence: 8, role: 'office',
+      }));
+      assert.deepEqual(transfer.record.payload, { role: 'office' });
+      assert.equal(refusal(controller.enqueueTransferRequest({
+        callSid, callerE164: FICTION_E164_A, intentSequence: 9, role: 'office-number' as never,
+      })), 'transfer_role_invalid');
+      const snapshot = store.snapshot();
+      const visible = JSON.stringify(snapshot);
+      assert.ok(!visible.includes(FICTION_E164_A));
+      assert.ok(!visible.includes('Test Caller'));
+      assert.ok(!visible.includes('101 Main Street'));
+    }
+
+    // ─── 8. Replay is a duplicate, across instances too ────────────────────
     {
       const first = expectEnqueued(controller.enqueue(request({ correlationId: 'CA-c0-0004' })));
       assert.equal(first.created, true);
@@ -290,29 +363,31 @@ function main(): void {
 
     // ─── 8. The idempotency input is deterministic and closed ──────────────
     {
-      const base = deriveTurnIdempotencyKey({ correlationId: CORRELATION, kind: 'transfer' });
+      const base = deriveTurnIdempotencyKey({
+        correlationId: CORRELATION, kind: 'transfer', intentSequence: 1, payloadVersion: 1,
+      });
       assert.match(base, IDEMPOTENCY_KEY_RE);
-      assert.equal(DEFAULT_TURN_REF, '1');
       assert.equal(
         base,
-        deriveTurnIdempotencyKey({ correlationId: CORRELATION, kind: 'transfer', turnRef: null }),
-        'an absent turn reference is the fixed default, never a clock reading',
+        deriveTurnIdempotencyKey({ correlationId: CORRELATION, kind: 'transfer', intentSequence: 1, payloadVersion: 1 }),
+        'the same confirmed intent and payload version is stable',
+      );
+      assert.notEqual(
+        base,
+        deriveTurnIdempotencyKey({ correlationId: CORRELATION, kind: 'transfer', intentSequence: 2, payloadVersion: 1 }),
+      );
+      assert.notEqual(
+        base,
+        deriveTurnIdempotencyKey({ correlationId: CORRELATION, kind: 'transfer', intentSequence: 1, payloadVersion: 2 }),
+      );
+      assert.notEqual(
+        base,
+        deriveTurnIdempotencyKey({ correlationId: 'CA-c0-0009', kind: 'transfer', intentSequence: 1, payloadVersion: 1 }),
       );
       assert.equal(
         base,
-        deriveTurnIdempotencyKey({ correlationId: CORRELATION, kind: 'transfer', turnRef: '1' }),
-      );
-      assert.notEqual(
-        base,
-        deriveTurnIdempotencyKey({ correlationId: CORRELATION, kind: 'transfer', turnRef: '2' }),
-      );
-      assert.notEqual(
-        base,
-        deriveTurnIdempotencyKey({ correlationId: 'CA-c0-0009', kind: 'transfer' }),
-      );
-      assert.notEqual(
-        base,
-        deriveTurnIdempotencyKey({ correlationId: CORRELATION, kind: 'message' }),
+        deriveTurnIdempotencyKey({ correlationId: CORRELATION, kind: 'message', intentSequence: 1, payloadVersion: 1 }),
+        'a kind change cannot bypass the tuple delivery identity',
       );
 
       // Payload text is NOT an input to the key.
@@ -335,11 +410,11 @@ function main(): void {
 
       // ...and an unvalidated key input fails with a typed code.
       assert.throws(
-        () => deriveTurnIdempotencyKey({ correlationId: 'bad id', kind: 'transfer' }),
+        () => deriveTurnIdempotencyKey({ correlationId: 'bad id', kind: 'transfer', intentSequence: 1, payloadVersion: 1 }),
         /c0_invalid_correlation_id/,
       );
       assert.throws(
-        () => deriveTurnIdempotencyKey({ correlationId: CORRELATION, kind: 'ops_alert' }),
+        () => deriveTurnIdempotencyKey({ correlationId: CORRELATION, kind: 'ops_alert', intentSequence: 1, payloadVersion: 1 }),
         /c0_invalid_kind/,
       );
       assert.throws(
@@ -347,9 +422,10 @@ function main(): void {
           deriveTurnIdempotencyKey({
             correlationId: CORRELATION,
             kind: 'transfer',
-            turnRef: 'bad ref',
+            intentSequence: 0,
+            payloadVersion: 1,
           }),
-        /c0_invalid_turn_ref/,
+        /c0_invalid_intent_sequence/,
       );
     }
 
@@ -382,6 +458,8 @@ function main(): void {
           controller.enqueue({
             callerE164: FICTION_E164_A,
             correlationId: CORRELATION,
+            intentSequence: 1,
+            payloadVersion: 1,
           } as C0EnqueueRequest),
         ),
         'record_not_redacted',
@@ -510,6 +588,8 @@ function main(): void {
       const frozenRequest = Object.freeze({
         callerE164: FICTION_E164_A,
         correlationId: 'CA-c0-0006',
+        intentSequence: 1,
+        payloadVersion: 1,
         record: Object.freeze({ redacted: true as const, kind: 'message' as const, payload: frozenPayload }),
       });
 
@@ -517,7 +597,7 @@ function main(): void {
       assert.ok(isReadyPlan(plan), 'a frozen, valid request plans cleanly');
       assert.deepEqual(
         Object.keys(plan).sort(),
-        ['correlationId', 'idempotencyKey', 'kind', 'outcome', 'payload'],
+        ['correlationId', 'idempotencyKey', 'intentSequence', 'kind', 'outcome', 'payload', 'payloadVersion'],
         'a ready plan carries exactly the store inputs plus the outcome',
       );
       assert.equal(plan.correlationId, 'CA-c0-0006');

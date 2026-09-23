@@ -78,7 +78,7 @@ function main(): void {
 
   // ─── 1. The inventory is closed, unique, frozen and complete ────────────
   {
-    assert.equal(C0_BLOCK_KEYS.length, 8, 'eight reviewed transitions');
+    assert.equal(C0_BLOCK_KEYS.length, 11, 'eleven reviewed transitions');
     assert.equal(new Set(C0_BLOCK_KEYS).size, C0_BLOCK_KEYS.length, 'no duplicate key');
     assert.deepEqual(
       (Object.keys(C0_BLOCK_WORDING) as string[]).sort(),
@@ -121,12 +121,20 @@ function main(): void {
       assert.equal(rendered.text, C0_BLOCK_WORDING[key], 'the line is the reviewed literal');
       assert.equal(rendered.text.trim(), rendered.text, 'a reviewed line is already trimmed');
       assert.ok(rendered.text.length > 0 && rendered.text.length <= MAX_WORDING_CHARS);
-      assert.ok(!/\d/.test(rendered.text), `${key} carries no digit at all`);
+      if (key === 'emergency_notice') {
+        assert.equal(rendered.text.includes('911'), true, 'emergency guidance names the emergency service');
+      } else {
+        assert.ok(!/\d/.test(rendered.text), `${key} carries no digit at all`);
+      }
       assert.ok(isC0BlockKey(rendered.key));
     }
 
-    const lines = C0_BLOCK_KEYS.map((key) => C0_BLOCK_WORDING[key]);
-    assert.equal(new Set(lines).size, lines.length, 'no two transitions share a line');
+    const requestReview = 'The office will review your request and contact you.';
+    assert.equal(C0_BLOCK_WORDING.booking_recorded, requestReview);
+    assert.equal(C0_BLOCK_WORDING.message_recorded, requestReview);
+    assert.equal(C0_BLOCK_WORDING.reschedule_recorded, requestReview);
+    assert.ok(!C0_BLOCK_WORDING.transfer_unavailable.includes('recorded'));
+    assert.ok(!C0_BLOCK_WORDING.transfer_unavailable.includes('details'));
   }
 
   // ─── 4. The renderer takes a KEY and nothing else ──────────────────────
@@ -229,6 +237,13 @@ function main(): void {
         withLine('opening', 'Powered by the twilio desk.'),
         'denied_token',
         { denyTokens: PROHIBITED_TOKENS },
+      ],
+      [
+        'a forbidden booking promise',
+        'booking_recorded',
+        withLine('booking_recorded', 'Your appointment is booked.'),
+        'denied_token',
+        { denyTokens: ['booked', 'appointment confirmed'] },
       ],
     ];
 

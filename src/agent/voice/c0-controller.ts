@@ -39,7 +39,7 @@
  *
  * DETERMINISTIC IDEMPOTENCY
  *   The key is derived from the correlation identity only — correlation id,
- *   accepted kind, and the caller's opaque turn reference — never from payload
+ *   accepted kind, caller-confirmed intent sequence and payload version — never from payload
  *   text. Replaying the same turn recomputes the identical key, so the store
  *   returns the record it already holds (`duplicate`) and a retry cannot double
  *   write. Payload text can neither influence nor leak into a key.
@@ -54,6 +54,7 @@
 import { createHash } from 'node:crypto';
 import {
   evaluateC0Gate,
+  normalizeCallerE164,
   type C0Config,
   type C0GateReason,
   type C0GateResult,
@@ -70,14 +71,12 @@ import {
 
 // ─── Vocabulary ─────────────────────────────────────────────────────────────
 
-/** Correlation ids are opaque, bounded, and safe to echo at an operator. */
+/** Parent call identifiers are opaque, bounded, and safe to echo at an operator. */
 export const CORRELATION_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
+export const C0_PARENT_CALL_SID_RE = /^CA[0-9a-f]{32}$/;
 
-/** The caller's opaque turn reference — same shape, same bound. */
-export const TURN_REF_RE = /^[A-Za-z0-9._:-]{1,64}$/;
-
-/** Used when the caller supplies no turn reference. Fixed, never clock-based. */
-export const DEFAULT_TURN_REF = '1';
+/** A delivery sequence exists only after the caller confirmed the intent. */
+export const POSITIVE_INTEGER_RE = /^[1-9]\d*$/;
 
 /**
  * The kinds this contract will accept, on top of the store's own vocabulary.
@@ -91,6 +90,9 @@ export const C0_ENQUEUE_KINDS: readonly OutboxKind[] = [
   'message',
 ];
 
+/** Delivery APIs may add a narrowly typed record kind without widening generic enqueue. */
+export const C0_DELIVERY_KINDS: readonly OutboxKind[] = [...C0_ENQUEUE_KINDS, 'service_intent'];
+
 export type C0TurnStatus = 'inert' | 'enqueued' | 'duplicate';
 
 /** The refusal half of the gate's own vocabulary — `'allowed'` cannot refuse. */
@@ -100,6 +102,13 @@ export type C0RefusalReason =
   | C0GateRefusalReason
   | 'correlation_missing'
   | 'correlation_malformed'
+  | 'intent_sequence_missing'
+  | 'intent_sequence_malformed'
+  | 'payload_version_missing'
+  | 'payload_version_malformed'
+  | 'call_sid_malformed'
+  | 'service_intent_invalid'
+  | 'transfer_role_invalid'
   | 'kind_not_accepted'
   | 'record_not_redacted'
   | 'payload_invalid'
@@ -177,8 +186,10 @@ export interface C0EnqueueRequest {
   /** Supplied by the transport; never looked up here. */
   readonly callerE164?: string | null;
   readonly correlationId?: string | null;
-  /** Optional opaque turn reference — see DETERMINISTIC IDEMPOTENCY. */
-  readonly turnRef?: string | null;
+  /** Allocated only after caller confirmation; a missing sequence refuses. */
+  readonly intentSequence?: number | null;
+  /** Versioned payload schema; a missing version refuses. */
+  readonly payloadVersion?: number | null;
   readonly record: C0RedactedRecord;
 }
 
@@ -197,6 +208,32 @@ export interface C0Controller {
   evaluate(callerE164?: string | null): C0GateResult;
   /** The contract's only write, and never a delivery. */
   enqueue(request: C0EnqueueRequest): C0TurnResult;
+  enqueueServiceIntent(request: C0ServiceIntentRequest): C0TurnResult;
+  enqueueTransferRequest(request: C0TransferRequest): C0TurnResult;
+}
+
+export interface C0ServiceIntent {
+  readonly name: string;
+  readonly callbackE164: string;
+  readonly serviceAddress: string;
+  readonly scope: string;
+  readonly preferredWindows: string;
+  readonly callerConfirmed: true;
+}
+
+export interface C0ServiceIntentRequest {
+  readonly callSid?: string | null;
+  readonly callerE164?: string | null;
+  readonly intentSequence?: number | null;
+  readonly payloadVersion?: number | null;
+  readonly intent?: C0ServiceIntent | null;
+}
+
+export interface C0TransferRequest {
+  readonly callSid?: string | null;
+  readonly callerE164?: string | null;
+  readonly intentSequence?: number | null;
+  readonly role?: 'office' | 'backup' | null;
 }
 
 // ─── The pure decision ──────────────────────────────────────────────────────
@@ -211,6 +248,8 @@ export interface C0ReadyPlan {
   readonly outcome: 'ready';
   readonly idempotencyKey: string;
   readonly correlationId: string;
+  readonly intentSequence: number;
+  readonly payloadVersion: number;
   readonly kind: OutboxKind;
   readonly target?: string;
   readonly payload: Record<string, unknown>;
@@ -228,8 +267,8 @@ export function isCorrelationId(value: unknown): value is string {
   return typeof value === 'string' && CORRELATION_ID_RE.test(value);
 }
 
-export function isTurnRef(value: unknown): value is string {
-  return typeof value === 'string' && TURN_REF_RE.test(value.trim());
+export function isPositiveInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0;
 }
 
 export function isAcceptedKind(value: unknown): value is OutboxKind {
@@ -256,16 +295,16 @@ function requireCorrelationId(value: unknown): string {
   return value;
 }
 
-function requireTurnRef(value: unknown): string {
-  if (value === undefined || value === null) return DEFAULT_TURN_REF;
-  if (typeof value !== 'string' || value.trim() === '') return fail('c0_invalid_turn_ref');
-  if (!isTurnRef(value)) return fail('c0_invalid_turn_ref');
-  return value.trim();
+function requirePositiveInteger(value: unknown, code: string): number {
+  if (!isPositiveInteger(value)) return fail(code);
+  return value;
 }
 
 function requireKind(value: unknown): OutboxKind {
-  if (!isAcceptedKind(value)) return fail('c0_invalid_kind');
-  return value;
+  if (typeof value !== 'string' || !(C0_DELIVERY_KINDS as readonly string[]).includes(value)) {
+    return fail('c0_invalid_kind');
+  }
+  return value as OutboxKind;
 }
 
 function validTarget(value: unknown): string | null {
@@ -289,6 +328,45 @@ function validPayload(value: unknown): Record<string, unknown> | null {
   return value as Record<string, unknown>;
 }
 
+function validParentCallSid(value: unknown): value is string {
+  return typeof value === 'string' && C0_PARENT_CALL_SID_RE.test(value);
+}
+
+function validIntentText(value: unknown, maxChars: number): value is string {
+  if (typeof value !== 'string' || value.trim() === '' || value.length > maxChars) return false;
+  if (/[\u0000-\u001F\u007F]/.test(value)) return false;
+  if (/[^@\s]+@[^@\s]+\.[^@\s]+/.test(value)) return false;
+  // Canonicalize compatibility digits plus all common separator forms before
+  // applying a deliberately conservative capture boundary.
+  const normalized = value.normalize('NFKC').replace(/[\p{Pd}\p{Zs}\u2011\u00A0\u202F\u2212]/gu, ' ');
+  const digits = normalized.match(/\p{Nd}/gu) ?? [];
+  if (digits.length >= 10) return false;
+  // A seven-digit chain is phone-like even if ordinary punctuation hides it.
+  return !/(?:\p{Nd}[\s().,;:/\\_-]*){7,}/u.test(normalized);
+}
+
+function validateServiceIntent(value: unknown): C0ServiceIntent | null {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return null;
+  const intent = value as Record<string, unknown>;
+  if (Object.keys(intent).sort().join(',') !== 'callbackE164,callerConfirmed,name,preferredWindows,scope,serviceAddress') {
+    return null;
+  }
+  const callbackE164 = normalizeCallerE164(intent.callbackE164 as string);
+  if (callbackE164 === null || intent.callerConfirmed !== true) return null;
+  if (!validIntentText(intent.name, 120)) return null;
+  if (!validIntentText(intent.serviceAddress, 240)) return null;
+  if (!validIntentText(intent.scope, 1_000)) return null;
+  if (!validIntentText(intent.preferredWindows, 500)) return null;
+  return {
+    name: intent.name,
+    callbackE164,
+    serviceAddress: intent.serviceAddress,
+    scope: intent.scope,
+    preferredWindows: intent.preferredWindows,
+    callerConfirmed: true,
+  };
+}
+
 /**
  * The deterministic idempotency input for a turn.
  *
@@ -300,15 +378,20 @@ function validPayload(value: unknown): Record<string, unknown> | null {
 export function deriveTurnIdempotencyKey(input: {
   correlationId: string;
   kind: OutboxKind;
-  turnRef?: string | null;
+  intentSequence: number;
+  payloadVersion: number;
 }): string {
   const correlationId = requireCorrelationId(input?.correlationId);
   const kind = requireKind(input?.kind);
-  const turnRef = requireTurnRef(input?.turnRef);
+  const intentSequence = requirePositiveInteger(input?.intentSequence, 'c0_invalid_intent_sequence');
+  const payloadVersion = requirePositiveInteger(input?.payloadVersion, 'c0_invalid_payload_version');
   const digest = createHash('sha256')
-    .update(`${correlationId}\u0000${kind}\u0000${turnRef}`)
+    .update(`${correlationId}\u0000${intentSequence}\u0000${payloadVersion}`)
     .digest('hex');
-  return `c0.${kind}.${digest.slice(0, 24)}`;
+  // The stable delivery key deliberately does not encode kind: a reconnect
+  // must not create a second durable record after a classification change.
+  void kind;
+  return `c0.delivery.${digest.slice(0, 24)}`;
 }
 
 /**
@@ -341,12 +424,12 @@ export function planC0Enqueue(config: C0Config, input: C0EnqueueRequest): C0Plan
     return inertPlan('correlation_missing');
   }
   if (!isCorrelationId(rawCorrelation)) return inertPlan('correlation_malformed');
-  const rawTurnRef = input?.turnRef;
-  if (rawTurnRef !== undefined && rawTurnRef !== null) {
-    if (typeof rawTurnRef !== 'string' || rawTurnRef.trim() === '' || !isTurnRef(rawTurnRef)) {
-      return inertPlan('correlation_malformed');
-    }
-  }
+  const intentSequence = input?.intentSequence;
+  if (intentSequence === undefined || intentSequence === null) return inertPlan('intent_sequence_missing');
+  if (!isPositiveInteger(intentSequence)) return inertPlan('intent_sequence_malformed');
+  const payloadVersion = input?.payloadVersion;
+  if (payloadVersion === undefined || payloadVersion === null) return inertPlan('payload_version_missing');
+  if (!isPositiveInteger(payloadVersion)) return inertPlan('payload_version_malformed');
 
   // 7. The caller's record must carry the redaction assertion.
   const record: unknown = input?.record;
@@ -375,9 +458,12 @@ export function planC0Enqueue(config: C0Config, input: C0EnqueueRequest): C0Plan
     idempotencyKey: deriveTurnIdempotencyKey({
       correlationId: rawCorrelation,
       kind: candidate.kind,
-      turnRef: rawTurnRef ?? null,
+      intentSequence,
+      payloadVersion,
     }),
     correlationId: rawCorrelation,
+    intentSequence,
+    payloadVersion,
     kind: candidate.kind,
     ...(target !== undefined ? { target } : {}),
     payload,
@@ -395,6 +481,37 @@ function inertResult(reason: C0RefusalReason, gate: C0GateResult | null = null):
     reason,
     gate,
   };
+}
+
+function persistReadyPlan(outbox: C0OutboxSink, plan: C0ReadyPlan): C0TurnResult {
+  try {
+    const stored = outbox.append({
+      idempotencyKey: plan.idempotencyKey,
+      callSid: plan.correlationId,
+      kind: plan.kind,
+      ...(plan.target !== undefined ? { target: plan.target } : {}),
+      payload: plan.payload,
+      payloadVersion: plan.payloadVersion,
+    });
+    return {
+      status: stored.created ? 'enqueued' : 'duplicate',
+      performed: false,
+      delivered: false,
+      enqueued: true,
+      reason: null,
+      idempotencyKey: plan.idempotencyKey,
+      recordId: stored.record.id,
+      record: stored.record,
+      created: stored.created,
+    };
+  } catch {
+    return inertResult('outbox_rejected');
+  }
+}
+
+function validatedGate(config: C0Config, callerE164: string | null | undefined): C0GateResult | C0InertResult {
+  const gate = evaluateC0Gate(config, callerE164);
+  return gate.allowed ? gate : inertResult(refusalReasonFor(gate), gate);
 }
 
 /**
@@ -422,33 +539,55 @@ export function createC0Controller(deps: C0ControllerDeps): C0Controller {
       // Inert: no store call is made at all, so a refusal cannot write.
       if (plan.outcome === 'inert') return inertResult(plan.reason, plan.gate);
 
-      try {
-        const stored = outbox.append({
-          idempotencyKey: plan.idempotencyKey,
-          callSid: plan.correlationId,
-          kind: plan.kind,
-          ...(plan.target !== undefined ? { target: plan.target } : {}),
-          payload: plan.payload,
-        });
-        return {
-          status: stored.created ? 'enqueued' : 'duplicate',
-          performed: false,
-          delivered: false,
-          enqueued: true,
-          reason: null,
-          idempotencyKey: plan.idempotencyKey,
-          recordId: stored.record.id,
-          record: stored.record,
-          created: stored.created,
-        };
-      } catch {
-        // Fail closed: a store that refuses or throws is reported as a typed
-        // refusal — never rethrown, never converted into a success. The store's
-        // error text is deliberately NOT surfaced: an arbitrary error message
-        // could carry caller-supplied text, and no payload may cross this
-        // boundary. `outbox_rejected` is the whole signal.
-        return inertResult('outbox_rejected');
+      return persistReadyPlan(outbox, plan);
+    },
+
+    enqueueServiceIntent(request: C0ServiceIntentRequest): C0TurnResult {
+      const gated = validatedGate(config, request?.callerE164);
+      if ('status' in gated) return gated;
+      if (!validParentCallSid(request?.callSid)) return inertResult('call_sid_malformed');
+      if (!isPositiveInteger(request?.intentSequence) || !isPositiveInteger(request?.payloadVersion)) {
+        return inertResult('service_intent_invalid');
       }
+      const intent = validateServiceIntent(request?.intent);
+      if (intent === null) return inertResult('service_intent_invalid');
+      return persistReadyPlan(outbox, {
+        outcome: 'ready',
+        idempotencyKey: deriveTurnIdempotencyKey({
+          correlationId: request.callSid,
+          kind: 'service_intent',
+          intentSequence: request.intentSequence,
+          payloadVersion: request.payloadVersion,
+        }),
+        correlationId: request.callSid,
+        intentSequence: request.intentSequence,
+        payloadVersion: request.payloadVersion,
+        kind: 'service_intent',
+        payload: intent as unknown as Record<string, unknown>,
+      });
+    },
+
+    enqueueTransferRequest(request: C0TransferRequest): C0TurnResult {
+      const gated = validatedGate(config, request?.callerE164);
+      if ('status' in gated) return gated;
+      if (!validParentCallSid(request?.callSid)) return inertResult('call_sid_malformed');
+      if (!isPositiveInteger(request?.intentSequence)) return inertResult('intent_sequence_malformed');
+      if (request?.role !== 'office' && request?.role !== 'backup') return inertResult('transfer_role_invalid');
+      const payloadVersion = 1;
+      return persistReadyPlan(outbox, {
+        outcome: 'ready',
+        idempotencyKey: deriveTurnIdempotencyKey({
+          correlationId: request.callSid,
+          kind: 'transfer',
+          intentSequence: request.intentSequence,
+          payloadVersion,
+        }),
+        correlationId: request.callSid,
+        intentSequence: request.intentSequence,
+        payloadVersion,
+        kind: 'transfer',
+        payload: { role: request.role },
+      });
     },
   };
 }

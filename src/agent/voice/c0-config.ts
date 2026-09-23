@@ -37,7 +37,8 @@ import { maskPhone } from './outbox.js';
 /** Absent env ⇒ OFF. This constant exists so "default false" is assertable. */
 export const VOICE_C0_ENABLED_DEFAULT = false;
 
-export const DEFAULT_OUTBOX_PATH = 'data/voice-outbox.jsonl';
+export const DEFAULT_OUTBOX_PATH = 'data/c0/voice-outbox.jsonl';
+export const DEFAULT_C0_MAPPING_PATH = 'data/c0/voice-c0-mapping.jsonl';
 export const DEFAULT_OUTBOX_STALE_MS = 300_000;
 export const DEFAULT_OUTBOX_MONITOR_INTERVAL_MS = 60_000;
 
@@ -53,6 +54,8 @@ export const C0_ENV_NAMES = [
   'VOICE_C0_ALLOWLIST',
   'VOICE_C0_PROVIDER',
   'VOICE_C0_MODEL',
+  'VOICE_C0_NTFY_TOPIC',
+  'VOICE_C0_MAPPING_PATH',
   'VOICE_OUTBOX_PATH',
   'VOICE_OUTBOX_STALE_MS',
   'VOICE_OUTBOX_MONITOR_INTERVAL_MS',
@@ -72,7 +75,10 @@ export interface C0Config {
   /** Config NAMES only. Explicit emission is required; never a platform default. */
   provider: string | null;
   model: string | null;
+  /** Canary-only notification topic name; no credential is ever read here. */
+  ntfyTopic: string | null;
   outboxPath: string;
+  mappingPath: string;
   staleAfterMs: number;
   monitorIntervalMs: number;
   /** Non-fatal configuration problems, already redacted. */
@@ -98,7 +104,9 @@ export interface RedactedC0Config {
   allowlistMasked: readonly string[];
   provider: string | null;
   model: string | null;
+  ntfyTopic: string | null;
   outboxPath: string;
+  mappingPath: string;
   staleAfterMs: number;
   monitorIntervalMs: number;
   warnings: readonly string[];
@@ -188,13 +196,16 @@ export function loadC0Config(env: C0Env = process.env): C0Config {
   }
 
   const outboxPath = optString(env.VOICE_OUTBOX_PATH) ?? DEFAULT_OUTBOX_PATH;
+  const mappingPath = optString(env.VOICE_C0_MAPPING_PATH) ?? DEFAULT_C0_MAPPING_PATH;
 
   return {
     enabled,
     allowlist,
     provider: optString(env.VOICE_C0_PROVIDER),
     model: optString(env.VOICE_C0_MODEL),
+    ntfyTopic: optString(env.VOICE_C0_NTFY_TOPIC),
     outboxPath,
+    mappingPath,
     staleAfterMs: positiveInt(
       env.VOICE_OUTBOX_STALE_MS,
       DEFAULT_OUTBOX_STALE_MS,
@@ -248,7 +259,9 @@ export function redactedConfig(config: C0Config): RedactedC0Config {
     allowlistMasked: config.allowlist.map((entry) => maskPhone(entry)),
     provider: config.provider,
     model: config.model,
+    ntfyTopic: config.ntfyTopic,
     outboxPath: config.outboxPath,
+    mappingPath: config.mappingPath,
     staleAfterMs: config.staleAfterMs,
     monitorIntervalMs: config.monitorIntervalMs,
     warnings: config.warnings,

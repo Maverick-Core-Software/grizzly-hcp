@@ -52,14 +52,27 @@ export const STALE_REPEAT_MULTIPLIER = 2;
 
 export type StaleTier = 'stale' | 'stale_repeat';
 
-/** Statuses a report counts, in a fixed order for stable output. */
-export const REPORTED_STATUSES: readonly OutboxStatus[] = [
+/**
+ * This module intentionally has no runtime imports, so it cannot import the
+ * outbox's runtime array. The compile-time completeness assertion below makes
+ * this local mirror fail strict compilation whenever `OutboxStatus` gains a
+ * status, while the colocated check compares it to the canonical export.
+ */
+export const OUTBOX_STATUSES = [
   'pending',
   'in_flight',
   'done',
   'failed',
+  'human_reconciliation_required',
   'stale_alerted',
-];
+] as const satisfies readonly OutboxStatus[];
+
+type MissingOutboxStatus = Exclude<OutboxStatus, (typeof OUTBOX_STATUSES)[number]>;
+const OUTBOX_STATUS_LIST_IS_COMPLETE: MissingOutboxStatus extends never ? true : never = true;
+void OUTBOX_STATUS_LIST_IS_COMPLETE;
+
+/** Every canonical outbox status is counted, in its stable source order. */
+export const REPORTED_STATUSES: readonly OutboxStatus[] = OUTBOX_STATUSES;
 
 export type StatusCounts = Record<OutboxStatus, number>;
 
@@ -190,13 +203,11 @@ function identify(record: OutboxRecord): Omit<StaleOutboxEntry, 'ageMs' | 'tier'
 }
 
 function countStatuses(records: readonly OutboxRecord[]): StatusCounts {
-  const counts: StatusCounts = {
-    pending: 0,
-    in_flight: 0,
-    done: 0,
-    failed: 0,
-    stale_alerted: 0,
-  };
+  // Derive this from the outbox's status allow-list so an added status cannot
+  // silently become `undefined + 1` or fail strict type checking here.
+  const counts = Object.fromEntries(
+    OUTBOX_STATUSES.map((status) => [status, 0]),
+  ) as StatusCounts;
   for (const record of records) {
     if ((REPORTED_STATUSES as readonly string[]).includes(record.status)) {
       counts[record.status] += 1;

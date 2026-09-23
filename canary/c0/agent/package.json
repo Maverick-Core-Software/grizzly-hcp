@@ -1,0 +1,27 @@
+{
+  "name": "grizzly-c0-canary-agent",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "check": "npx tsx src/worker.check.ts && npx tsx src/worker-gates.check.ts && npx tsx src/tools.check.ts && npx tsx src/transfer.check.ts && npx tsx src/config.check.ts && npx tsx src/caller.check.ts && npx tsx src/admission.check.ts && npx tsx src/audio.check.ts && npx tsx src/runtime.check.ts && npx tsx src/mapping.check.ts",
+    "typecheck": "npx tsc --noEmit"
+  },
+  "dependencies": {
+    "@livekit/agents": "1.9.0",
+    "@livekit/agents-plugin-openai": "1.9.0",
+    "@livekit/rtc-node": "0.13.34",
+    "dotenv": "16.4.5",
+    "livekit-server-sdk": "2.19.1",
+    "twilio": "6.0.2",
+    "zod": "3.25.76"
+  },
+  "devDependencies": {
+    "@types/node": "22.0.0",
+    "tsx": "4.19.0",
+    "typescript": "5.7.3"
+  }
+}

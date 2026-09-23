@@ -65,22 +65,28 @@ import { redactValue } from './outbox.js';
  */
 export type C0BlockKey =
   | 'opening'
+  | 'ai_disclosure'
+  | 'emergency_notice'
   | 'after_hours'
   | 'transfer_connecting'
   | 'transfer_unavailable'
   | 'booking_recorded'
   | 'message_recorded'
   | 'reschedule_recorded'
+  | 'deadline_transition'
   | 'closing';
 
 export const C0_BLOCK_KEYS: readonly C0BlockKey[] = Object.freeze([
   'opening',
+  'ai_disclosure',
+  'emergency_notice',
   'after_hours',
   'transfer_connecting',
   'transfer_unavailable',
   'booking_recorded',
   'message_recorded',
   'reschedule_recorded',
+  'deadline_transition',
   'closing',
 ]);
 
@@ -95,12 +101,15 @@ export const TERMINAL_PUNCTUATION = '.?!';
 /** Frozen: the only way to change what a caller hears is to edit this literal. */
 export const C0_BLOCK_WORDING: Readonly<Record<C0BlockKey, string>> = Object.freeze({
   opening: 'Thanks for calling Grizzly Electrical. How can I help you today?',
+  ai_disclosure: 'You are speaking with an automated assistant for Grizzly Electrical. You can ask for a person at any time.',
+  emergency_notice: 'If this is an emergency, such as fire, smoke, a shock, or a downed line, hang up and call 911.',
   after_hours: 'Our office is closed right now, but I can still take down what you need.',
   transfer_connecting: 'One moment please while I connect you with a person.',
-  transfer_unavailable: 'I was not able to reach a person just now, so I have recorded your details.',
-  booking_recorded: 'I have written that down and someone will confirm your appointment.',
-  message_recorded: 'I have recorded your message and passed it to the team.',
-  reschedule_recorded: 'I have noted that change and someone will confirm it with you.',
+  transfer_unavailable: 'I was not able to reach a person just now. Please try again later.',
+  booking_recorded: 'The office will review your request and contact you.',
+  message_recorded: 'The office will review your request and contact you.',
+  reschedule_recorded: 'The office will review your request and contact you.',
+  deadline_transition: 'Let me connect you with someone from the office.',
   closing: 'Thank you for calling Grizzly Electrical. Goodbye.',
 });
 

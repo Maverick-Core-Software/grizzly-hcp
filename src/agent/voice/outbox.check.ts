@@ -25,6 +25,7 @@ import {
   deriveRecordId,
 } from './outbox.js';
 import type { OutboxKind } from './outbox.js';
+import { C0_LIMITS } from './c0-limits.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, '..', '..', '..');
@@ -183,6 +184,24 @@ function main(): void {
       const done = outbox.markStatus(TRANSFER_KEY, 'done');
       assert.equal(done.record?.status, 'done');
       assert.equal(done.record?.lastAttemptAt, STAMP_2);
+      assert.deepEqual(
+        outbox.markStatus(TRANSFER_KEY, 'pending'),
+        { updated: false, record: null, reason: 'invalid_transition' },
+        'a terminal record cannot be reopened by an arbitrary status write',
+      );
+
+      outbox.append({ idempotencyKey: 'call:CA-reconcile:message', callSid: 'CA4', kind: 'message' });
+      const reconciliation = outbox.markStatus(
+        'call:CA-reconcile:message',
+        'human_reconciliation_required',
+      );
+      assert.equal(reconciliation.updated, true);
+      assert.equal(reconciliation.record?.nextAttemptAt, null);
+      assert.deepEqual(
+        outbox.markStatus('call:CA-reconcile:message', 'pending'),
+        { updated: false, record: null, reason: 'invalid_transition' },
+        'human reconciliation is terminal until an operator resolves it outside this store',
+      );
 
       assert.throws(
         () => outbox.markStatus(TRANSFER_KEY, 'retrying' as never),
@@ -244,7 +263,62 @@ function main(): void {
       assert.equal(reopened.snapshot().counts.pending, 0);
     }
 
-    // ─── 8. Corrupt lines are skipped and counted, never fatal ──────────────
+    // ─── 8. Retry exhaustion is durable human reconciliation ───────────────
+    {
+      const retryFile = path.join(dir, 'retry-outbox.jsonl');
+      const retryClock = { at: new Date(STAMP_1) };
+      const retryOutbox = new Outbox({ path: retryFile, now: () => retryClock.at });
+
+      retryOutbox.append({ idempotencyKey: 'retry:fifth:message', callSid: 'CA-retry-5', kind: 'message' });
+      retryOutbox.markStatus('retry:fifth:message', 'in_flight', {
+        attempts: C0_LIMITS.maxOutboxAttempts,
+        lastAttemptAt: STAMP_1,
+      });
+      const fifthFailure = retryOutbox.markStatus('retry:fifth:message', 'pending');
+      assert.equal(fifthFailure.record?.status, 'human_reconciliation_required');
+      assert.equal(fifthFailure.record?.nextAttemptAt, null);
+
+      const afterRestart = new Outbox({ path: retryFile, now: () => retryClock.at });
+      assert.equal(afterRestart.find('retry:fifth:message')?.status, 'human_reconciliation_required');
+      assert.equal(afterRestart.claimNext(), null, 'a restart cannot revive an exhausted retry');
+
+      retryOutbox.append({ idempotencyKey: 'retry:window:note', callSid: 'CA-retry-window', kind: 'note' });
+      retryOutbox.markStatus('retry:window:note', 'in_flight', { attempts: 1, lastAttemptAt: STAMP_1 });
+      retryClock.at = new Date(new Date(STAMP_1).getTime() + C0_LIMITS.outboxRetryWindowMs);
+      const windowFailure = retryOutbox.markStatus('retry:window:note', 'pending');
+      assert.equal(windowFailure.record?.status, 'human_reconciliation_required', 'the retry-window edge is terminal');
+      assert.equal(windowFailure.record?.nextAttemptAt, null);
+
+      // Four attempts remain claimable. The fifth attempt is then represented
+      // as a pending record (as a crash/restart can leave behind) so claimNext
+      // itself must reconcile it rather than silently skipping it.
+      const claimFifthFile = path.join(dir, 'retry-claim-fifth-outbox.jsonl');
+      const claimFifthOutbox = new Outbox({ path: claimFifthFile, now: () => retryClock.at });
+      claimFifthOutbox.append({ idempotencyKey: 'retry:claim-fifth:message', callSid: 'CA-retry-claim-fifth', kind: 'message' });
+      claimFifthOutbox.markStatus('retry:claim-fifth:message', 'in_flight', { attempts: C0_LIMITS.maxOutboxAttempts - 1, lastAttemptAt: STAMP_1 });
+      claimFifthOutbox.markStatus('retry:claim-fifth:message', 'pending', { nextAttemptAt: STAMP_1 });
+      const fourthAttempt = claimFifthOutbox.claimNext();
+      assert.equal(fourthAttempt?.status, 'in_flight', 'four attempts remain claimable');
+      assert.equal(fourthAttempt?.attempts, C0_LIMITS.maxOutboxAttempts, 'claiming creates the fifth attempt');
+      fs.writeFileSync(claimFifthFile, `${JSON.stringify({ ...fourthAttempt, status: 'pending', nextAttemptAt: null })}\n`, 'utf-8');
+      const fifthOnClaim = new Outbox({ path: claimFifthFile, now: () => retryClock.at });
+      assert.equal(fifthOnClaim.claimNext(), null, 'claiming the fifth pending attempt performs no retry');
+      assert.equal(fifthOnClaim.find('retry:claim-fifth:message')?.status, 'human_reconciliation_required');
+      assert.equal(fifthOnClaim.find('retry:claim-fifth:message')?.nextAttemptAt, null);
+
+      retryClock.at = new Date(STAMP_1);
+      retryOutbox.append({ idempotencyKey: 'retry:claim-window:transfer', callSid: 'CA-retry-claim', kind: 'transfer' });
+      retryClock.at = new Date(new Date(STAMP_1).getTime() + C0_LIMITS.outboxRetryWindowMs);
+      assert.equal(retryOutbox.claimNext(), null, 'claiming an expired pending record performs no retry');
+      assert.equal(
+        retryOutbox.find('retry:claim-window:transfer')?.status,
+        'human_reconciliation_required',
+        'claimNext atomically reconciles an exhausted pending record instead of skipping it',
+      );
+      assert.equal(retryOutbox.find('retry:claim-window:transfer')?.nextAttemptAt, null);
+    }
+
+    // ─── 9. Corrupt lines are skipped and counted, never fatal ──────────────
     {
       const healthy = outbox.list().length;
       fs.appendFileSync(file, '{"id":"ob_broken","idempotencyKey":"broken:1"}\n', 'utf-8');
@@ -260,7 +334,7 @@ function main(): void {
       );
     }
 
-    // ─── 9. The snapshot is redacted; the durable record is not ────────────
+    // ─── 10. The snapshot is redacted; the durable record is not ───────────
     {
       outbox.append({
         idempotencyKey: 'call:CA9:transfer',
@@ -343,7 +417,7 @@ function main(): void {
       );
     }
 
-    // ─── 10. Counts add up ─────────────────────────────────────────────────
+    // ─── 11. Counts add up ─────────────────────────────────────────────────
     {
       const records = outbox.list();
       const counts = countByStatus(records);
@@ -352,7 +426,7 @@ function main(): void {
       assert.equal(total, records.length, 'per-status counts sum to the record count');
     }
 
-    // ─── 11. The source keeps the guarantees this check just proved ────────
+    // ─── 12. The source keeps the guarantees this check just proved ────────
     {
       const src = fs.readFileSync(path.resolve(__dirname, 'outbox.ts'), 'utf-8');
       assert.ok(src.includes('fs.appendFileSync'), 'new records use a single append');
@@ -368,7 +442,10 @@ function main(): void {
       for (const specifier of [...src.matchAll(/(?:from\s+|import\s*\(\s*)'([^']+)'/g)].map(
         (match) => match[1],
       )) {
-        assert.ok(specifier.startsWith('node:'), `outbox.ts imports only node builtins (${specifier})`);
+        assert.ok(
+          specifier.startsWith('node:') || specifier === './c0-limits.js',
+          `outbox.ts imports only node builtins or the local retry policy (${specifier})`,
+        );
       }
 
       // The default outbox path belongs to the repo, and this check never

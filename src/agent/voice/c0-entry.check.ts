@@ -14,7 +14,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadC0Config, evaluateC0Gate } from './c0-config.js';
-import { DEFAULT_TURN_REF, deriveTurnIdempotencyKey, isCorrelationId, isTurnRef, planC0Enqueue } from './c0-controller.js';
+import { deriveTurnIdempotencyKey, isCorrelationId, isPositiveInteger, planC0Enqueue } from './c0-controller.js';
 import { maskPhone } from './outbox.js';
 import {
   C0_ADMISSION_INERT_FIELDS,
@@ -52,6 +52,8 @@ const VALID_INGRESS: Readonly<Record<string, unknown>> = {
   source: 'transport',
   correlationId: 'CA-c0-1001',
   callerE164: FICTION_E164_A,
+  intentSequence: 1,
+  payloadVersion: 1,
 };
 
 function ingress(overrides: Record<string, unknown> = {}): Record<string, unknown> {
@@ -106,12 +108,12 @@ function main(): void {
     assert.deepEqual([...C0_INGRESS_SOURCES], ['transport', 'operator', 'replay']);
     assert.deepEqual(
       [...C0_INGRESS_REQUIRED_FIELDS],
-      ['callerE164', 'correlationId', 'source'],
+      ['callerE164', 'correlationId', 'intentSequence', 'payloadVersion', 'source'],
       'the required set is caller, correlation and producer',
     );
     assert.deepEqual(
       [...C0_INGRESS_FIELDS].sort(),
-      ['callerE164', 'correlationId', 'source', 'turnRef', 'utterance'],
+      ['callerE164', 'correlationId', 'intentSequence', 'payloadVersion', 'source', 'utterance'],
       'the closed field set is exactly the contracted shape',
     );
     assert.ok(!C0_INGRESS_FIELDS.includes('enabled'), 'no self-declared enable field exists');
@@ -254,26 +256,25 @@ function main(): void {
     }
   }
 
-  // ─── 8. Turn reference is optional and controller-shaped ────────────────
+  // ─── 8. Confirmation sequence and payload version are explicit ──────────
   {
-    assert.equal(DEFAULT_TURN_REF, '1');
-    for (const turnRef of [undefined, null]) {
-      const admitted = expectAdmitted(admitC0Ingress(ON, ingress({ turnRef })));
-      assert.equal(admitted.turnRef, DEFAULT_TURN_REF, 'an ABSENT turn reference is the default');
-    }
-    const explicit = expectAdmitted(admitC0Ingress(ON, ingress({ turnRef: 'turn.1:2' })));
-    assert.equal(explicit.turnRef, 'turn.1:2');
-
-    // A present but unusable turn reference is malformed — including a blank
-    // one. The controller applies the same rule, and this pins the agreement.
-    for (const turnRef of ['', '   ', 'bad ref', 'r'.repeat(65), 'ref+1', 42, true, {}, []]) {
+    for (const intentSequence of [undefined, null, 0, -1, 1.5, '1', true, {}, []]) {
       expectInert(
-        admitC0Ingress(ON, ingress({ turnRef })),
-        'ingress_turn_ref_malformed',
-        typeof turnRef === 'string' && turnRef.length > 7 ? turnRef : undefined,
+        admitC0Ingress(ON, ingress({ intentSequence })),
+        intentSequence === undefined || intentSequence === null ? 'ingress_incomplete' : 'ingress_intent_sequence_malformed',
       );
     }
-    assert.throws(() => deriveTurnIdempotencyKey({ correlationId: 'CA-c0-1009', kind: 'transfer', turnRef: '' }));
+    for (const payloadVersion of [undefined, null, 0, -1, 1.5, '1']) {
+      expectInert(
+        admitC0Ingress(ON, ingress({ payloadVersion })),
+        payloadVersion === undefined || payloadVersion === null ? 'ingress_incomplete' : 'ingress_payload_version_malformed',
+      );
+    }
+    const admitted = expectAdmitted(admitC0Ingress(ON, ingress({ intentSequence: 2, payloadVersion: 3 })));
+    assert.equal(admitted.intentSequence, 2);
+    assert.equal(admitted.payloadVersion, 3);
+    assert.equal(isPositiveInteger(admitted.intentSequence), true);
+    assert.throws(() => deriveTurnIdempotencyKey({ correlationId: 'CA-c0-1009', kind: 'transfer', intentSequence: 0, payloadVersion: 1 }));
   }
 
   // ─── 9. The transcript is bounded and carried VERBATIM ──────────────────
@@ -339,7 +340,8 @@ function main(): void {
       source: 'operator' as const,
       correlationId: 'CA-c0-1004',
       callerE164: FICTION_E164_A,
-      turnRef: 'turn-7',
+      intentSequence: 7,
+      payloadVersion: 1,
       utterance: 'please call me back',
     });
     const first = admitC0Ingress(ON, frozen);
@@ -351,26 +353,28 @@ function main(): void {
         source: 'operator',
         correlationId: 'CA-c0-1004',
         callerE164: FICTION_E164_A,
-        turnRef: 'turn-7',
+        intentSequence: 7,
+        payloadVersion: 1,
         utterance: 'please call me back',
       },
       'the ingress object is not mutated',
     );
     assert.equal(expectAdmitted(first).source, 'operator');
-    assert.equal(expectAdmitted(first).turnRef, 'turn-7');
+    assert.equal(expectAdmitted(first).intentSequence, 7);
   }
 
   // ─── 13. An admitted handle composes with the controller ───────────────
   {
     const admitted = expectAdmitted(
-      admitC0Ingress(ON, ingress({ correlationId: 'CA-c0-1005', turnRef: 'turn.9' })),
+      admitC0Ingress(ON, ingress({ correlationId: 'CA-c0-1005', intentSequence: 9, payloadVersion: 1 })),
     );
     assert.equal(isCorrelationId(admitted.correlationId), true, 'the controller would accept it');
-    assert.equal(isTurnRef(admitted.turnRef), true, 'the controller would accept it');
+    assert.equal(isPositiveInteger(admitted.intentSequence), true, 'the controller would accept it');
     const plan = planC0Enqueue(ON, {
       callerE164: FICTION_E164_A,
       correlationId: admitted.correlationId,
-      turnRef: admitted.turnRef,
+      intentSequence: admitted.intentSequence,
+      payloadVersion: admitted.payloadVersion,
       record: { redacted: true, kind: 'transfer' },
     });
     assert.equal(plan.outcome, 'ready', 'an admitted handle is directly enqueueable');

@@ -15,6 +15,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
+  OUTBOX_STATUSES as MONITOR_OUTBOX_STATUSES,
   REPORTED_STATUSES,
   STALE_ELIGIBLE_STATUSES,
   STALE_REPEAT_MULTIPLIER,
@@ -22,13 +23,14 @@ import {
   findStale,
   formatStaleReport,
 } from './outbox-monitor.js';
-import type { OutboxRecord } from './outbox.js';
+import { OUTBOX_STATUSES as CANONICAL_OUTBOX_STATUSES, type OutboxRecord } from './outbox.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 const NOW = new Date('2026-09-22T15:00:00.000Z');
 const STALE_MS = 300_000; // 5 minutes
 const REPEAT_MS = STALE_MS * STALE_REPEAT_MULTIPLIER;
+const fakeSid = (prefix: string): string => `${prefix}${'0'.repeat(32)}`;
 
 function minutesAgo(minutes: number): string {
   return new Date(NOW.getTime() - minutes * 60_000).toISOString();
@@ -37,13 +39,15 @@ function minutesAgo(minutes: number): string {
 function fixture(overrides: Partial<OutboxRecord> & { idempotencyKey: string }): OutboxRecord {
   return {
     id: `ob_${overrides.idempotencyKey}`,
-    callSid: 'CA00000000000000000000000000000000',
+    callSid: fakeSid('CA'),
     kind: 'transfer',
     payload: {},
+    payloadVersion: 1,
     status: 'pending',
     attempts: 0,
     createdAt: minutesAgo(0),
     lastAttemptAt: null,
+    nextAttemptAt: null,
     ...overrides,
   };
 }
@@ -62,6 +66,12 @@ function main(): void {
     assert.deepEqual([...STALE_ELIGIBLE_STATUSES], ['pending', 'in_flight']);
     assert.equal(STALE_REPEAT_MULTIPLIER, 2);
     assert.ok((REPORTED_STATUSES as readonly string[]).includes('stale_alerted'));
+    assert.deepEqual(
+      MONITOR_OUTBOX_STATUSES,
+      CANONICAL_OUTBOX_STATUSES,
+      'the zero-runtime-import monitor list exactly mirrors the canonical outbox allow-list',
+    );
+    assert.ok((REPORTED_STATUSES as readonly string[]).includes('human_reconciliation_required'));
   }
 
   // ─── 2. The threshold boundary ───────────────────────────────────────────
@@ -169,6 +179,11 @@ function main(): void {
       fixture({ idempotencyKey: 'done-old', status: 'done', createdAt: minutesAgo(200) }),
       fixture({ idempotencyKey: 'failed-old', status: 'failed', createdAt: minutesAgo(200) }),
       fixture({
+        idempotencyKey: 'human-reconciliation',
+        status: 'human_reconciliation_required',
+        createdAt: minutesAgo(200),
+      }),
+      fixture({
         idempotencyKey: 'reported-old',
         status: 'stale_alerted',
         createdAt: minutesAgo(200),
@@ -182,7 +197,7 @@ function main(): void {
     assert.equal(report.checkedAt, NOW.toISOString(), 'the injected clock is the report clock');
     assert.equal(report.staleAfterMs, STALE_MS);
     assert.equal(report.repeatAfterMs, REPEAT_MS);
-    assert.equal(report.totalRecords, 7);
+    assert.equal(report.totalRecords, 8);
     assert.equal(report.staleCount, 2, 'one stale pending record + one stale in-flight record');
     assert.equal(report.unparseableCount, 1, 'the un-parseable record is counted, not silently stale');
     assert.equal(
@@ -195,8 +210,14 @@ function main(): void {
       in_flight: 1,
       done: 1,
       failed: 1,
+      human_reconciliation_required: 1,
       stale_alerted: 1,
     });
+    assert.deepEqual(
+      Object.keys(report.counts).sort(),
+      [...CANONICAL_OUTBOX_STATUSES].sort(),
+      'count keys exactly match the canonical outbox status allow-list',
+    );
     assert.deepEqual(
       report.stale.map((entry) => entry.tier),
       ['stale', 'stale'],

@@ -45,6 +45,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
+import { nextRetryAt, retryExhausted } from './c0-limits.js';
 
 // ─── Vocabulary ─────────────────────────────────────────────────────────────
 
@@ -53,6 +54,7 @@ export type OutboxStatus =
   | 'in_flight'
   | 'done'
   | 'failed'
+  | 'human_reconciliation_required'
   | 'stale_alerted';
 
 /** Allow-list, not deny-list: an unknown status is refused, never stored. */
@@ -61,6 +63,7 @@ export const OUTBOX_STATUSES: readonly OutboxStatus[] = [
   'in_flight',
   'done',
   'failed',
+  'human_reconciliation_required',
   'stale_alerted',
 ];
 
@@ -69,6 +72,7 @@ export type OutboxKind =
   | 'booking'
   | 'message'
   | 'reschedule'
+  | 'service_intent'
   | 'ops_alert'
   | 'note';
 
@@ -78,6 +82,7 @@ export const OUTBOX_KINDS: readonly OutboxKind[] = [
   'booking',
   'message',
   'reschedule',
+  'service_intent',
   'ops_alert',
   'note',
 ];
@@ -112,10 +117,14 @@ export interface OutboxRecord {
   target?: string;
   /** The only caller-supplied text the record carries. Never exposed raw. */
   payload: Record<string, unknown>;
+  /** Positive schema version used in the controller's delivery key. */
+  payloadVersion: number;
   status: OutboxStatus;
   attempts: number;
   createdAt: string;
   lastAttemptAt: string | null;
+  /** The earliest safe retry time; null when never/ no longer retryable. */
+  nextAttemptAt: string | null;
   error?: string;
 }
 
@@ -126,6 +135,7 @@ export interface OutboxAppendInput {
   kind: OutboxKind;
   target?: string;
   payload?: Record<string, unknown>;
+  payloadVersion?: number;
   createdAt?: string;
 }
 
@@ -140,6 +150,7 @@ export interface OutboxAppendResult {
 export interface OutboxPatch {
   attempts?: number;
   lastAttemptAt?: string | null;
+  nextAttemptAt?: string | null;
   error?: string | null;
   target?: string;
 }
@@ -147,6 +158,7 @@ export interface OutboxPatch {
 export const OUTBOX_PATCHABLE_FIELDS: readonly (keyof OutboxPatch)[] = [
   'attempts',
   'lastAttemptAt',
+  'nextAttemptAt',
   'error',
   'target',
 ];
@@ -155,7 +167,7 @@ export interface OutboxMarkResult {
   updated: boolean;
   record: OutboxRecord | null;
   /** Present only when `updated` is false. Never an upsert. */
-  reason?: 'not_found';
+  reason?: 'not_found' | 'invalid_transition';
 }
 
 export interface OutboxOptions {
@@ -177,6 +189,8 @@ export interface RedactedOutboxRecord {
   attempts: number;
   createdAt: string;
   lastAttemptAt: string | null;
+  nextAttemptAt: string | null;
+  payloadVersion: number;
   error?: string;
   payload: Record<string, unknown>;
 }
@@ -273,6 +287,10 @@ export function redactValue(value: unknown): unknown {
     for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
       // A phone-ish key is masked whatever its value shape, so a structured
       // value under `phone`/`callbackPhone` cannot slip through untouched.
+      if (/name|address/i.test(key) && typeof entry !== 'object') {
+        out[key] = '***';
+        continue;
+      }
       if (/phone|mobile|cell|tel|sms|caller|contact|email/i.test(key) && typeof entry !== 'object') {
         out[key] = typeof entry === 'string' ? redactString(entry) : '***';
         continue;
@@ -300,6 +318,8 @@ export function redactRecord(record: OutboxRecord): RedactedOutboxRecord {
     attempts: record.attempts,
     createdAt: record.createdAt,
     lastAttemptAt: record.lastAttemptAt,
+    nextAttemptAt: record.nextAttemptAt,
+    payloadVersion: record.payloadVersion,
     ...(record.error !== undefined ? { error: redactString(record.error) } : {}),
     payload: redactValue(record.payload) as Record<string, unknown>,
   };
@@ -308,7 +328,14 @@ export function redactRecord(record: OutboxRecord): RedactedOutboxRecord {
 // ─── Pure helpers ───────────────────────────────────────────────────────────
 
 export function emptyCounts(): Record<OutboxStatus, number> {
-  return { pending: 0, in_flight: 0, done: 0, failed: 0, stale_alerted: 0 };
+  return {
+    pending: 0,
+    in_flight: 0,
+    done: 0,
+    failed: 0,
+    human_reconciliation_required: 0,
+    stale_alerted: 0,
+  };
 }
 
 export function countByStatus(
@@ -390,6 +417,19 @@ function validateAttempts(value: unknown): number {
   return value;
 }
 
+function validatePayloadVersion(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0) {
+    return fail('voice_outbox_invalid_payload_version');
+  }
+  return value;
+}
+
+function validateTimestamp(value: unknown, code: string): string | null {
+  if (value === null) return null;
+  if (typeof value !== 'string' || !Number.isFinite(Date.parse(value))) return fail(code);
+  return value;
+}
+
 function validatePatch(patch: unknown): OutboxPatch {
   if (patch === null || typeof patch !== 'object' || Array.isArray(patch)) {
     return fail('voice_outbox_invalid_patch');
@@ -400,6 +440,24 @@ function validatePatch(patch: unknown): OutboxPatch {
     }
   }
   return patch as OutboxPatch;
+}
+
+const OUTBOX_TRANSITIONS: Readonly<Record<OutboxStatus, readonly OutboxStatus[]>> = Object.freeze({
+  pending: ['in_flight', 'failed', 'stale_alerted', 'human_reconciliation_required'],
+  in_flight: ['pending', 'done', 'failed', 'human_reconciliation_required'],
+  done: [],
+  failed: ['pending', 'human_reconciliation_required'],
+  human_reconciliation_required: [],
+  stale_alerted: ['pending', 'human_reconciliation_required'],
+});
+
+function canTransition(from: OutboxStatus, to: OutboxStatus): boolean {
+  return from === to || OUTBOX_TRANSITIONS[from].includes(to);
+}
+
+/** Whether the bounded C0 retry policy has run out for this record. */
+export function outboxRetryExhausted(record: Pick<OutboxRecord, 'attempts' | 'createdAt'>, nowMs: number): boolean {
+  return retryExhausted(record.attempts, Date.parse(record.createdAt), nowMs);
 }
 
 /** Rebuild a record from disk, or null when the line is not a usable record. */
@@ -413,6 +471,8 @@ function coerceRecord(value: unknown): OutboxRecord | null {
   if (typeof raw.status !== 'string' || !OUTBOX_STATUSES.includes(raw.status as OutboxStatus)) return null;
   if (typeof raw.attempts !== 'number' || !Number.isInteger(raw.attempts)) return null;
   if (typeof raw.createdAt !== 'string') return null;
+  const payloadVersion = raw.payloadVersion === undefined ? 1 : raw.payloadVersion;
+  if (typeof payloadVersion !== 'number' || !Number.isSafeInteger(payloadVersion) || payloadVersion <= 0) return null;
   return {
     id: raw.id,
     idempotencyKey: raw.idempotencyKey,
@@ -423,10 +483,12 @@ function coerceRecord(value: unknown): OutboxRecord | null {
       raw.payload && typeof raw.payload === 'object' && !Array.isArray(raw.payload)
         ? (raw.payload as Record<string, unknown>)
         : {},
+    payloadVersion,
     status: raw.status as OutboxStatus,
     attempts: raw.attempts,
     createdAt: raw.createdAt,
     lastAttemptAt: typeof raw.lastAttemptAt === 'string' ? raw.lastAttemptAt : null,
+    nextAttemptAt: typeof raw.nextAttemptAt === 'string' ? raw.nextAttemptAt : null,
     ...(typeof raw.error === 'string' ? { error: raw.error } : {}),
   };
 }
@@ -463,6 +525,7 @@ export class Outbox {
     const callSid = validateCallSid(input.callSid);
     const kind = validateKind(input.kind);
     const payload = validatePayload(input.payload ?? {});
+    const payloadVersion = validatePayloadVersion(input.payloadVersion ?? 1);
     const target = input.target === undefined ? undefined : validateTarget(input.target);
 
     const existing = this.find(idempotencyKey);
@@ -475,11 +538,13 @@ export class Outbox {
       kind,
       ...(target !== undefined ? { target } : {}),
       payload,
+      payloadVersion,
       // Always pending: a record exists because the action has NOT run yet.
       status: 'pending',
       attempts: 0,
       createdAt: input.createdAt ?? this.now().toISOString(),
       lastAttemptAt: null,
+      nextAttemptAt: null,
     };
 
     this.ensureDir();
@@ -516,6 +581,9 @@ export class Outbox {
     const { records } = this.readAll();
     const index = records.findIndex((record) => record.idempotencyKey === key);
     if (index < 0) return { updated: false, record: null, reason: 'not_found' };
+    if (!canTransition(records[index].status, nextStatus)) {
+      return { updated: false, record: null, reason: 'invalid_transition' };
+    }
 
     const merged: OutboxRecord = { ...records[index], status: nextStatus };
     if (safePatch.attempts !== undefined) merged.attempts = validateAttempts(safePatch.attempts);
@@ -525,9 +593,28 @@ export class Outbox {
       else merged.error = validateError(safePatch.error);
     }
     if (safePatch.lastAttemptAt !== undefined) {
-      merged.lastAttemptAt = safePatch.lastAttemptAt;
+      merged.lastAttemptAt = validateTimestamp(safePatch.lastAttemptAt, 'voice_outbox_invalid_last_attempt_at');
     } else if (nextStatus !== 'pending') {
       merged.lastAttemptAt = this.now().toISOString();
+    }
+    if (safePatch.nextAttemptAt !== undefined) {
+      merged.nextAttemptAt = validateTimestamp(safePatch.nextAttemptAt, 'voice_outbox_invalid_next_attempt_at');
+    } else if (nextStatus === 'pending') {
+      const lastAttemptAtMs = Date.parse(merged.lastAttemptAt ?? '');
+      const next = nextRetryAt(merged.attempts, lastAttemptAtMs);
+      merged.nextAttemptAt = next === null ? null : new Date(next).toISOString();
+    } else {
+      merged.nextAttemptAt = null;
+    }
+
+    // D6: an exhausted failure/requeue is terminal for automatic delivery. Do
+    // not leave a record looking pending when no retry can safely occur.
+    if (
+      nextStatus === 'pending' &&
+      retryExhausted(merged.attempts, Date.parse(merged.createdAt), this.now().getTime())
+    ) {
+      merged.status = 'human_reconciliation_required';
+      merged.nextAttemptAt = null;
     }
 
     records[index] = merged;
@@ -542,7 +629,21 @@ export class Outbox {
    */
   claimNext(): OutboxRecord | null {
     const { records } = this.readAll();
-    const next = records.find((record) => record.status === 'pending');
+    const nowMs = this.now().getTime();
+    // An exhausted pending row must become visible as human reconciliation,
+    // rather than being silently skipped forever. Each transition is atomic.
+    for (const record of records) {
+      if (record.status === 'pending' && outboxRetryExhausted(record, nowMs)) {
+        this.markStatus(record.idempotencyKey, 'human_reconciliation_required');
+      }
+    }
+
+    const current = this.readAll().records;
+    const next = current.find((record) =>
+      record.status === 'pending' &&
+      !outboxRetryExhausted(record, nowMs) &&
+      (record.nextAttemptAt === null || Date.parse(record.nextAttemptAt) <= nowMs),
+    );
     if (!next) return null;
     const result = this.markStatus(next.idempotencyKey, 'in_flight', {
       attempts: next.attempts + 1,
