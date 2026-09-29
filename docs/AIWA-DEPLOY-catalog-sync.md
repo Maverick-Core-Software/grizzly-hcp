@@ -16,7 +16,7 @@ list, and estimates, and publishes all three CSVs into the RAG ingest directory.
 
 A single-file Node.js bundle (`sync-catalog.mjs`, built locally by
 `npm run build:sync-catalog`) runs once per week via a systemd timer. It replaces
-four PC-side scripts that exported the same data on CartersPC and then copied it
+four PC-side scripts that exported the same data on CMB-Workbench and then copied it
 to this host with the passphrase-less deploy key. Those scripts have been
 **deleted** from the repository, not disabled — see Section 12.
 

@@ -127,7 +127,7 @@ If the job fails, check the journal (Section 8) before retrying.
 ### 7.0 First: retire the PC-side trigger (REQUIRED — approval needed)
 
 The job is **not** run by hand from the PC. It is scheduled by a PM2 entry on
-CartersPC:
+CMB-Workbench:
 
 | Field | Value |
 | --- | --- |

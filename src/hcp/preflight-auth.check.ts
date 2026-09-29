@@ -113,7 +113,7 @@ async function main(): Promise<void> {
   // ─── 2b. HCP_MCP_URL has no non-empty default anywhere ───────────────────
   // A localhost fallback silently reroutes a misconfigured caller to a stray
   // PC-local daemon instead of failing, which is how work stays pinned to
-  // CartersPC after the CT102 cutover. Empty-string (`|| ""`) is fine — the
+  // CMB-Workbench after the CT102 cutover. Empty-string (`|| ""`) is fine — the
   // consumer still throws before connecting.
   assert.deepEqual(
     localhostDefaults,

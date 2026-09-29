@@ -5,7 +5,7 @@ and integrates with the Maverick RAG API on Proxmox for estimating intelligence.
 
 ## RAG Access
 
-The Maverick RAG API is at `http://192.168.1.12:8181` (LAN — same network as CartersPC).
+The Maverick RAG API is at `http://192.168.1.12:8181` (LAN — same network as CMB-Workbench).
 
 Available endpoints:
 - `POST /ask` — general Q&A; queries both `reference_docs` (NEC 2026, Oncor, etc.) and `grizzly_hcp` (customers, jobs)

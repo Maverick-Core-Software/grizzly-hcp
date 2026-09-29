@@ -20,7 +20,7 @@ function getClient(): Promise<Client> {
   if (clientPromise) return clientPromise;
   // No localhost default. A silent 127.0.0.1 fallback lets a caller that forgot
   // HCP_MCP_URL succeed against a stray PC-local daemon instead of failing loudly
-  // — the exact way work keeps getting pinned to CartersPC after the CT102 cutover.
+  // — the exact way work keeps getting pinned to CMB-Workbench after the CT102 cutover.
   const url = process.env.HCP_MCP_URL;
   if (!url) throw new Error("HCP service unavailable: HCP_MCP_URL is required when HCP_VIA_MCP=true (no localhost default)");
   const token = process.env.HCP_MCP_TOKEN;
